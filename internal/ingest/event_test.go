@@ -177,6 +177,141 @@ func TestTradeEventToDomain(t *testing.T) {
 	}
 }
 
+func TestTradeEventToDomain_WithMetadata(t *testing.T) {
+	strategy := "macd-rsi-v2"
+	entryReason := "MACD bullish crossover, RSI 42"
+	confidence := 0.85
+	stopLoss := 48000.0
+	takeProfit := 55000.0
+
+	event := TradeEvent{
+		TradeID:     "t-003",
+		AccountID:   "live",
+		Symbol:      "BTC-USD",
+		Side:        "buy",
+		Quantity:    0.5,
+		Price:       50000,
+		Fee:         25,
+		FeeCurrency: "USD",
+		MarketType:  "spot",
+		Timestamp:   "2025-01-15T10:00:00Z",
+		Strategy:    &strategy,
+		EntryReason: &entryReason,
+		Confidence:  &confidence,
+		StopLoss:    &stopLoss,
+		TakeProfit:  &takeProfit,
+	}
+
+	trade, err := event.ToDomain()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if trade.Strategy == nil || *trade.Strategy != "macd-rsi-v2" {
+		t.Errorf("expected strategy macd-rsi-v2, got %v", trade.Strategy)
+	}
+	if trade.EntryReason == nil || *trade.EntryReason != "MACD bullish crossover, RSI 42" {
+		t.Errorf("expected entry_reason, got %v", trade.EntryReason)
+	}
+	if trade.Confidence == nil || *trade.Confidence != 0.85 {
+		t.Errorf("expected confidence 0.85, got %v", trade.Confidence)
+	}
+	if trade.StopLoss == nil || *trade.StopLoss != 48000.0 {
+		t.Errorf("expected stop_loss 48000, got %v", trade.StopLoss)
+	}
+	if trade.TakeProfit == nil || *trade.TakeProfit != 55000.0 {
+		t.Errorf("expected take_profit 55000, got %v", trade.TakeProfit)
+	}
+}
+
+func TestTradeEventToDomain_WithoutMetadata(t *testing.T) {
+	event := TradeEvent{
+		TradeID:     "t-004",
+		AccountID:   "live",
+		Symbol:      "BTC-USD",
+		Side:        "buy",
+		Quantity:    0.5,
+		Price:       50000,
+		Fee:         25,
+		FeeCurrency: "USD",
+		MarketType:  "spot",
+		Timestamp:   "2025-01-15T10:00:00Z",
+	}
+
+	trade, err := event.ToDomain()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if trade.Strategy != nil {
+		t.Errorf("expected nil strategy, got %v", trade.Strategy)
+	}
+	if trade.EntryReason != nil {
+		t.Errorf("expected nil entry_reason, got %v", trade.EntryReason)
+	}
+	if trade.ExitReason != nil {
+		t.Errorf("expected nil exit_reason, got %v", trade.ExitReason)
+	}
+	if trade.Confidence != nil {
+		t.Errorf("expected nil confidence, got %v", trade.Confidence)
+	}
+	if trade.StopLoss != nil {
+		t.Errorf("expected nil stop_loss, got %v", trade.StopLoss)
+	}
+	if trade.TakeProfit != nil {
+		t.Errorf("expected nil take_profit, got %v", trade.TakeProfit)
+	}
+}
+
+func TestTradeEventValidation_WithMetadata(t *testing.T) {
+	strategy := "macd-rsi-v2"
+	confidence := 0.85
+	event := TradeEvent{
+		TradeID:     "t-005",
+		AccountID:   "live",
+		Symbol:      "BTC-USD",
+		Side:        "buy",
+		Quantity:    0.5,
+		Price:       50000,
+		Fee:         25,
+		FeeCurrency: "USD",
+		MarketType:  "spot",
+		Timestamp:   "2025-01-15T10:00:00Z",
+		Strategy:    &strategy,
+		Confidence:  &confidence,
+	}
+
+	if err := event.Validate(); err != nil {
+		t.Fatalf("expected valid event with metadata, got error: %v", err)
+	}
+}
+
+func TestTradeEventToDomain_ExitReason(t *testing.T) {
+	exitReason := "stop loss hit"
+	event := TradeEvent{
+		TradeID:     "t-006",
+		AccountID:   "live",
+		Symbol:      "BTC-USD",
+		Side:        "sell",
+		Quantity:    0.5,
+		Price:       48000,
+		Fee:         24,
+		FeeCurrency: "USD",
+		MarketType:  "spot",
+		Timestamp:   "2025-01-15T12:00:00Z",
+		ExitReason:  &exitReason,
+	}
+
+	trade, err := event.ToDomain()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if trade.ExitReason == nil || *trade.ExitReason != "stop loss hit" {
+		t.Errorf("expected exit_reason 'stop loss hit', got %v", trade.ExitReason)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStr(s, substr))
 }

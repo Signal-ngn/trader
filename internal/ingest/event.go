@@ -25,6 +25,14 @@ type TradeEvent struct {
 	Margin           *float64 `json:"margin,omitempty"`
 	LiquidationPrice *float64 `json:"liquidation_price,omitempty"`
 	FundingFee       *float64 `json:"funding_fee,omitempty"`
+
+	// Strategy metadata fields (optional)
+	Strategy    *string  `json:"strategy,omitempty"`
+	EntryReason *string  `json:"entry_reason,omitempty"`
+	ExitReason  *string  `json:"exit_reason,omitempty"`
+	Confidence  *float64 `json:"confidence,omitempty"`
+	StopLoss    *float64 `json:"stop_loss,omitempty"`
+	TakeProfit  *float64 `json:"take_profit,omitempty"`
 }
 
 // Validate checks that the trade event has all required fields and valid values.
@@ -88,6 +96,12 @@ func (e *TradeEvent) ToDomain() (*domain.Trade, error) {
 		Margin:           e.Margin,
 		LiquidationPrice: e.LiquidationPrice,
 		FundingFee:       e.FundingFee,
+		Strategy:         e.Strategy,
+		EntryReason:      e.EntryReason,
+		ExitReason:       e.ExitReason,
+		Confidence:       e.Confidence,
+		StopLoss:         e.StopLoss,
+		TakeProfit:       e.TakeProfit,
 	}
 
 	// Calculate cost basis

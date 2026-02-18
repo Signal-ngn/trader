@@ -18,8 +18,9 @@ func (r *Repository) InsertTrade(ctx context.Context, tx pgx.Tx, trade *domain.T
 		INSERT INTO ledger_trades (
 			trade_id, account_id, symbol, side, quantity, price, fee, fee_currency,
 			market_type, timestamp, ingested_at, cost_basis, realized_pnl,
-			leverage, margin, liquidation_price, funding_fee
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+			leverage, margin, liquidation_price, funding_fee,
+			strategy, entry_reason, exit_reason, confidence, stop_loss, take_profit
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
 		ON CONFLICT (trade_id) DO NOTHING
 	`,
 		trade.TradeID, trade.AccountID, trade.Symbol, string(trade.Side),
@@ -27,6 +28,7 @@ func (r *Repository) InsertTrade(ctx context.Context, tx pgx.Tx, trade *domain.T
 		string(trade.MarketType), trade.Timestamp, trade.IngestedAt,
 		trade.CostBasis, trade.RealizedPnL,
 		trade.Leverage, trade.Margin, trade.LiquidationPrice, trade.FundingFee,
+		trade.Strategy, trade.EntryReason, trade.ExitReason, trade.Confidence, trade.StopLoss, trade.TakeProfit,
 	)
 	if err != nil {
 		return false, fmt.Errorf("insert trade: %w", err)
@@ -112,7 +114,8 @@ func (r *Repository) ListTrades(ctx context.Context, accountID string, filter Tr
 	query := fmt.Sprintf(`
 		SELECT trade_id, account_id, symbol, side, quantity, price, fee, fee_currency,
 			market_type, timestamp, ingested_at, cost_basis, realized_pnl,
-			leverage, margin, liquidation_price, funding_fee
+			leverage, margin, liquidation_price, funding_fee,
+			strategy, entry_reason, exit_reason, confidence, stop_loss, take_profit
 		FROM ledger_trades
 		WHERE %s
 		ORDER BY timestamp DESC, trade_id DESC
@@ -135,6 +138,7 @@ func (r *Repository) ListTrades(ctx context.Context, accountID string, filter Tr
 			&t.Fee, &t.FeeCurrency, &marketType, &t.Timestamp, &t.IngestedAt,
 			&t.CostBasis, &t.RealizedPnL,
 			&t.Leverage, &t.Margin, &t.LiquidationPrice, &t.FundingFee,
+			&t.Strategy, &t.EntryReason, &t.ExitReason, &t.Confidence, &t.StopLoss, &t.TakeProfit,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan trade: %w", err)

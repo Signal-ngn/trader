@@ -40,10 +40,12 @@ func (r *Repository) upsertSpotPosition(ctx context.Context, tx pgx.Tx, trade *d
 			posID := fmt.Sprintf("%s-%s-spot-%d", trade.AccountID, trade.Symbol, trade.Timestamp.Unix())
 			_, err := tx.Exec(ctx, `
 				INSERT INTO ledger_positions (id, account_id, symbol, market_type, side,
-					quantity, avg_entry_price, cost_basis, realized_pnl, status, opened_at)
-				VALUES ($1, $2, $3, 'spot', 'long', $4, $5, $6, 0, 'open', $7)
+					quantity, avg_entry_price, cost_basis, realized_pnl, status, opened_at,
+					stop_loss, take_profit, confidence)
+				VALUES ($1, $2, $3, 'spot', 'long', $4, $5, $6, 0, 'open', $7, $8, $9, $10)
 			`, posID, trade.AccountID, trade.Symbol,
-				trade.Quantity, trade.Price, costBasis, trade.Timestamp)
+				trade.Quantity, trade.Price, costBasis, trade.Timestamp,
+				trade.StopLoss, trade.TakeProfit, trade.Confidence)
 			return err
 		}
 		// Sell without a position — skip (no position to close)
@@ -65,9 +67,11 @@ func (r *Repository) upsertSpotPosition(ctx context.Context, tx pgx.Tx, trade *d
 
 		_, err = tx.Exec(ctx, `
 			UPDATE ledger_positions
-			SET quantity = $1, avg_entry_price = $2, cost_basis = $3
+			SET quantity = $1, avg_entry_price = $2, cost_basis = $3,
+				stop_loss = COALESCE($5, stop_loss),
+				take_profit = COALESCE($6, take_profit)
 			WHERE id = $4
-		`, totalQuantity, avgEntry, totalCost, pos.ID)
+		`, totalQuantity, avgEntry, totalCost, pos.ID, trade.StopLoss, trade.TakeProfit)
 		return err
 	}
 
@@ -77,11 +81,13 @@ func (r *Repository) upsertSpotPosition(ctx context.Context, tx pgx.Tx, trade *d
 
 	if newQuantity <= 0 {
 		// Position fully closed
+		exitPrice := trade.Price
 		_, err = tx.Exec(ctx, `
 			UPDATE ledger_positions
-			SET quantity = 0, realized_pnl = realized_pnl + $1, status = 'closed', closed_at = $2
+			SET quantity = 0, realized_pnl = realized_pnl + $1, status = 'closed', closed_at = $2,
+				exit_price = $4, exit_reason = $5
 			WHERE id = $3
-		`, realizedPnL, trade.Timestamp, pos.ID)
+		`, realizedPnL, trade.Timestamp, pos.ID, exitPrice, trade.ExitReason)
 		return err
 	}
 
@@ -124,11 +130,13 @@ func (r *Repository) upsertFuturesPosition(ctx context.Context, tx pgx.Tx, trade
 		_, err := tx.Exec(ctx, `
 			INSERT INTO ledger_positions (id, account_id, symbol, market_type, side,
 				quantity, avg_entry_price, cost_basis, realized_pnl,
-				leverage, margin, liquidation_price, status, opened_at)
-			VALUES ($1, $2, $3, 'futures', $4, $5, $6, $7, 0, $8, $9, $10, 'open', $11)
+				leverage, margin, liquidation_price, status, opened_at,
+				stop_loss, take_profit, confidence)
+			VALUES ($1, $2, $3, 'futures', $4, $5, $6, $7, 0, $8, $9, $10, 'open', $11, $12, $13, $14)
 		`, posID, trade.AccountID, trade.Symbol, string(posSide),
 			trade.Quantity, trade.Price, costBasis,
-			trade.Leverage, trade.Margin, trade.LiquidationPrice, trade.Timestamp)
+			trade.Leverage, trade.Margin, trade.LiquidationPrice, trade.Timestamp,
+			trade.StopLoss, trade.TakeProfit, trade.Confidence)
 		return err
 	}
 	if err != nil {
@@ -154,10 +162,13 @@ func (r *Repository) upsertFuturesPosition(ctx context.Context, tx pgx.Tx, trade
 			SET quantity = $1, avg_entry_price = $2, cost_basis = $3,
 				leverage = COALESCE($4, leverage),
 				margin = COALESCE($5, margin),
-				liquidation_price = COALESCE($6, liquidation_price)
+				liquidation_price = COALESCE($6, liquidation_price),
+				stop_loss = COALESCE($8, stop_loss),
+				take_profit = COALESCE($9, take_profit)
 			WHERE id = $7
 		`, totalQuantity, avgEntry, totalCost,
-			trade.Leverage, trade.Margin, trade.LiquidationPrice, pos.ID)
+			trade.Leverage, trade.Margin, trade.LiquidationPrice, pos.ID,
+			trade.StopLoss, trade.TakeProfit)
 		return err
 	}
 
@@ -177,11 +188,13 @@ func (r *Repository) upsertFuturesPosition(ctx context.Context, tx pgx.Tx, trade
 	newQuantity := pos.Quantity - trade.Quantity
 	if newQuantity <= 0 {
 		// Fully closed
+		exitPrice := trade.Price
 		_, err = tx.Exec(ctx, `
 			UPDATE ledger_positions
-			SET quantity = 0, realized_pnl = realized_pnl + $1, status = 'closed', closed_at = $2
+			SET quantity = 0, realized_pnl = realized_pnl + $1, status = 'closed', closed_at = $2,
+				exit_price = $4, exit_reason = $5
 			WHERE id = $3
-		`, realizedPnL, trade.Timestamp, pos.ID)
+		`, realizedPnL, trade.Timestamp, pos.ID, exitPrice, trade.ExitReason)
 		return err
 	}
 
@@ -230,7 +243,8 @@ func (r *Repository) ListPositions(ctx context.Context, accountID string, status
 		query = `
 			SELECT id, account_id, symbol, market_type, side, quantity, avg_entry_price,
 				cost_basis, realized_pnl, leverage, margin, liquidation_price,
-				status, opened_at, closed_at
+				status, opened_at, closed_at,
+				exit_price, exit_reason, stop_loss, take_profit, confidence
 			FROM ledger_positions
 			WHERE account_id = $1
 			ORDER BY opened_at DESC
@@ -240,7 +254,8 @@ func (r *Repository) ListPositions(ctx context.Context, accountID string, status
 		query = `
 			SELECT id, account_id, symbol, market_type, side, quantity, avg_entry_price,
 				cost_basis, realized_pnl, leverage, margin, liquidation_price,
-				status, opened_at, closed_at
+				status, opened_at, closed_at,
+				exit_price, exit_reason, stop_loss, take_profit, confidence
 			FROM ledger_positions
 			WHERE account_id = $1 AND status = $2
 			ORDER BY opened_at DESC
@@ -263,6 +278,7 @@ func (r *Repository) ListPositions(ctx context.Context, accountID string, status
 			&p.Quantity, &p.AvgEntryPrice, &p.CostBasis, &p.RealizedPnL,
 			&p.Leverage, &p.Margin, &p.LiquidationPrice,
 			&statusStr, &p.OpenedAt, &p.ClosedAt,
+			&p.ExitPrice, &p.ExitReason, &p.StopLoss, &p.TakeProfit, &p.Confidence,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan position: %w", err)
@@ -342,7 +358,8 @@ func (r *Repository) TradesForRebuild(ctx context.Context, tx pgx.Tx, accountID 
 	rows, err := tx.Query(ctx, `
 		SELECT trade_id, account_id, symbol, side, quantity, price, fee, fee_currency,
 			market_type, timestamp, ingested_at, cost_basis, realized_pnl,
-			leverage, margin, liquidation_price, funding_fee
+			leverage, margin, liquidation_price, funding_fee,
+			strategy, entry_reason, exit_reason, confidence, stop_loss, take_profit
 		FROM ledger_trades
 		WHERE account_id = $1
 		ORDER BY timestamp ASC, trade_id ASC
@@ -361,6 +378,7 @@ func (r *Repository) TradesForRebuild(ctx context.Context, tx pgx.Tx, accountID 
 			&t.Fee, &t.FeeCurrency, &mtStr, &t.Timestamp, &t.IngestedAt,
 			&t.CostBasis, &t.RealizedPnL,
 			&t.Leverage, &t.Margin, &t.LiquidationPrice, &t.FundingFee,
+			&t.Strategy, &t.EntryReason, &t.ExitReason, &t.Confidence, &t.StopLoss, &t.TakeProfit,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan trade: %w", err)

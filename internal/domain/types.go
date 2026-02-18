@@ -91,6 +91,14 @@ type Trade struct {
 	Margin           *float64 `json:"margin,omitempty"`
 	LiquidationPrice *float64 `json:"liquidation_price,omitempty"`
 	FundingFee       *float64 `json:"funding_fee,omitempty"`
+
+	// Strategy metadata fields (nullable)
+	Strategy    *string  `json:"strategy,omitempty"`
+	EntryReason *string  `json:"entry_reason,omitempty"`
+	ExitReason  *string  `json:"exit_reason,omitempty"`
+	Confidence  *float64 `json:"confidence,omitempty"`
+	StopLoss    *float64 `json:"stop_loss,omitempty"`
+	TakeProfit  *float64 `json:"take_profit,omitempty"`
 }
 
 // Position represents a tracked position for a symbol.
@@ -110,6 +118,13 @@ type Position struct {
 	Status           PositionStatus `json:"status"`
 	OpenedAt         time.Time      `json:"opened_at"`
 	ClosedAt         *time.Time     `json:"closed_at,omitempty"`
+
+	// Strategy metadata fields (nullable)
+	ExitPrice  *float64 `json:"exit_price,omitempty"`
+	ExitReason *string  `json:"exit_reason,omitempty"`
+	StopLoss   *float64 `json:"stop_loss,omitempty"`
+	TakeProfit *float64 `json:"take_profit,omitempty"`
+	Confidence *float64 `json:"confidence,omitempty"`
 }
 
 // InferAccountType returns the account type based on the account ID.
