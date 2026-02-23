@@ -7,7 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"ledger/internal/domain"
+	"github.com/Spot-Canvas/ledger/internal/domain"
 )
 
 // UpsertPosition creates or updates a position based on the trade.

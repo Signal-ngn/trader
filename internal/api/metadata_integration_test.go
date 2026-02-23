@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"ledger/internal/api"
-	"ledger/internal/domain"
-	"ledger/internal/store"
+	"github.com/Spot-Canvas/ledger/internal/api"
+	"github.com/Spot-Canvas/ledger/internal/domain"
+	"github.com/Spot-Canvas/ledger/internal/store"
 )
 
 // Integration tests for trade metadata fields.

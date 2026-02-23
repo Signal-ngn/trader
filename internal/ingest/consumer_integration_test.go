@@ -13,8 +13,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"ledger/internal/ingest"
-	"ledger/internal/store"
+	"github.com/Spot-Canvas/ledger/internal/ingest"
+	"github.com/Spot-Canvas/ledger/internal/store"
 )
 
 // Integration test requires:

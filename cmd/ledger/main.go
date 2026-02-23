@@ -12,11 +12,11 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
-	"ledger/internal/api"
-	"ledger/internal/api/middleware"
-	"ledger/internal/config"
-	"ledger/internal/ingest"
-	"ledger/internal/store"
+	"github.com/Spot-Canvas/ledger/internal/api"
+	"github.com/Spot-Canvas/ledger/internal/api/middleware"
+	"github.com/Spot-Canvas/ledger/internal/config"
+	"github.com/Spot-Canvas/ledger/internal/ingest"
+	"github.com/Spot-Canvas/ledger/internal/store"
 )
 
 func main() {

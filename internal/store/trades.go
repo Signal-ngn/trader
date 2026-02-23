@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"ledger/internal/domain"
+	"github.com/Spot-Canvas/ledger/internal/domain"
 )
 
 // InsertTrade inserts a trade with ON CONFLICT DO NOTHING. Returns true if inserted.

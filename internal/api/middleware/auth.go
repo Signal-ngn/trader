@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
-	"ledger/internal/store"
+	"github.com/Spot-Canvas/ledger/internal/store"
 )
 
 // tenantIDKey is the typed context key for the tenant ID.

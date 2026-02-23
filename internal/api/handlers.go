@@ -8,8 +8,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"ledger/internal/api/middleware"
-	"ledger/internal/store"
+	"github.com/Spot-Canvas/ledger/internal/api/middleware"
+	"github.com/Spot-Canvas/ledger/internal/store"
 )
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

@@ -7,7 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"ledger/internal/domain"
+	"github.com/Spot-Canvas/ledger/internal/domain"
 )
 
 // GetOrCreateAccount looks up an account by (tenantID, id). If it doesn't exist, creates it.

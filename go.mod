@@ -1,4 +1,4 @@
-module ledger
+module github.com/Spot-Canvas/ledger
 
 go 1.24.6
 

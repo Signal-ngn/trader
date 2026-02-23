@@ -12,8 +12,8 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
-	"ledger/internal/domain"
-	"ledger/internal/store"
+	"github.com/Spot-Canvas/ledger/internal/domain"
+	"github.com/Spot-Canvas/ledger/internal/store"
 )
 
 const (
