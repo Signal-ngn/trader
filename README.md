@@ -21,6 +21,18 @@ A Go service that acts as a trading ledger for the spot-canvas ecosystem. It ing
 
 ### Installation
 
+**1. Install the `sn` CLI** (needed for login):
+
+```bash
+# go install
+go install github.com/Spot-Canvas/sn/cmd/sn@latest
+
+# Homebrew (macOS)
+brew install Spot-Canvas/sn/sn
+```
+
+**2. Install the `ledger` CLI:**
+
 ```bash
 # go install
 go install github.com/Spot-Canvas/ledger/cmd/ledger@latest
@@ -31,14 +43,12 @@ brew install --cask Spot-Canvas/ledger/ledger
 
 ### Authentication
 
-The CLI reads your API key from `~/.config/sn/config.yaml` — the same file written by `sn auth login`. No separate login step is needed.
-
 ```bash
-sn auth login          # obtain your API key via browser (one-time)
-ledger accounts list   # works immediately
+sn auth login          # opens browser — logs you in and stores your API key
+ledger accounts list   # works immediately; picks up the key from ~/.config/sn/config.yaml
 ```
 
-For trading bots or CI, set `LEDGER_API_KEY` directly:
+For trading bots or CI, skip `sn` entirely and set `LEDGER_API_KEY` directly:
 
 ```bash
 export LEDGER_API_KEY=your-api-key
