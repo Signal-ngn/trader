@@ -138,6 +138,28 @@ ledger --json accounts list                               # JSON output (any com
 
 ---
 
+## Agent Skill (pi)
+
+The ledger ships a [pi](https://github.com/mariozechner/pi) agent skill that gives AI coding agents full knowledge of the `ledger` CLI — commands, flags, trade event format, and bot patterns. Install it so your agent can record trades and query portfolio state without needing to look anything up.
+
+### Install
+
+```bash
+pi skill install https://github.com/Spot-Canvas/ledger
+```
+
+### Usage
+
+Once installed the skill is available as **`ledger`** in pi. Invoke it in any conversation where the agent needs to interact with the ledger:
+
+```
+Use the ledger skill to check my open positions before placing this trade.
+```
+
+The skill covers: accounts, portfolio, positions, trades, orders, import, config, NATS event format, and common trading bot patterns.
+
+---
+
 ## Local Development
 
 ### Prerequisites
