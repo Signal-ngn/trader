@@ -14,12 +14,12 @@ tasks:
   build:
     desc: Build ledger server binary
     cmds:
-      - go build -o {{.BINARY}} ./cmd/ledger
+      - go build -o {{.BINARY}} ./cmd/ledgerd
 
   build:cli:
-    desc: Build ledger CLI binary (cmd/ledger-cli → bin/ledger-cli)
+    desc: Build ledger CLI binary (cmd/ledger → bin/ledger)
     cmds:
-      - go build -o bin/ledger-cli ./cmd/ledger-cli
+      - go build -o bin/ledger ./cmd/ledger
 
   build:all:
     desc: Build all binaries (server + CLI)
@@ -36,7 +36,7 @@ tasks:
     desc: Run ledger service directly with go run
     dotenv: [".env"]
     cmds:
-      - go run ./cmd/ledger
+      - go run ./cmd/ledgerd
 
   # ─── Testing ───────────────────────────────────────────────
 

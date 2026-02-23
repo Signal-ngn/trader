@@ -8,7 +8,7 @@ before:
 
 builds:
   - id: ledger-cli
-    main: ./cmd/ledger-cli
+    main: ./cmd/ledger
     binary: ledger
     env:
       - CGO_ENABLED=0
