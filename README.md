@@ -1,228 +1,253 @@
 # Ledger Service
 
-A Go service that acts as a trading ledger for the spot-canvas ecosystem. It ingests trade events via NATS JetStream, maintains portfolio state (positions, P&L), and exposes data through a REST API.
+A Go service that acts as a trading ledger for the spot-canvas ecosystem. It ingests trade events via NATS JetStream, maintains portfolio state (positions, P&L), and exposes data through a REST API and CLI.
 
 ## Features
 
 - **Trade Ingestion**: NATS JetStream durable consumer for reliable, at-least-once trade processing
 - **Portfolio Tracking**: Positions derived from trade history with real-time updates
+- **Multi-Tenancy**: Bearer API key auth; each user's data is fully isolated
 - **Multi-Account**: Support for live and paper trading accounts
 - **Spot & Futures**: Handles both spot trades and leveraged futures positions
 - **REST API**: HTTP endpoints for querying portfolio state and importing historic trades
+- **CLI**: `ledger` command-line tool for humans and trading bots
 - **Tax Data**: Captures cost basis, realized P&L, fees, and holding periods for tax reporting
 - **Idempotent**: Duplicate trades are safely discarded (dedup by trade ID)
 - **Rebuildable**: Positions can be rebuilt from trade history for audit/repair
 
-## Prerequisites
+---
 
-- Go 1.24+
-- [Task](https://taskfile.dev/) (task runner)
-- Docker & Docker Compose (for local PostgreSQL and NATS)
+## CLI
 
-## Quick Start
+### Installation
 
 ```bash
-task setup
-# wait a few seconds for containers to start, then:
-task dev
+# go install
+go install github.com/Spot-Canvas/ledger/cmd/ledger@latest
+
+# Homebrew (macOS)
+brew install --cask Spot-Canvas/ledger/ledger
 ```
 
-This creates `.env` from the example, installs dependencies, starts PostgreSQL + NATS via Docker Compose, and runs the service.
+### Authentication
+
+The CLI reads your API key from `~/.config/sn/config.yaml` — the same file written by `sn auth login`. No separate login step is needed.
+
+```bash
+sn auth login          # obtain your API key via browser (one-time)
+ledger accounts list   # works immediately
+```
+
+For trading bots or CI, set `LEDGER_API_KEY` directly:
+
+```bash
+export LEDGER_API_KEY=your-api-key
+ledger accounts list
+```
+
+The tenant ID is resolved automatically on first use (via `GET /auth/resolve`) and cached in `~/.config/ledger/config.yaml`.
+
+### Commands
+
+#### Accounts
+
+```bash
+ledger accounts list           # list all accounts
+ledger accounts list --json    # JSON output
+```
+
+#### Portfolio
+
+```bash
+ledger portfolio live          # open positions + total realized P&L
+ledger portfolio paper --json
+```
+
+#### Positions
+
+```bash
+ledger positions live                    # open positions (default)
+ledger positions live --status closed    # closed positions
+ledger positions live --status all       # all positions
+ledger positions live --json
+```
+
+#### Trades
+
+```bash
+ledger trades live                          # 50 most recent trades
+ledger trades live --symbol BTC-USD         # filter by symbol
+ledger trades live --side buy               # filter by side
+ledger trades live --market-type futures    # filter by market type
+ledger trades live --start 2025-01-01T00:00:00Z --end 2025-02-01T00:00:00Z
+ledger trades live --limit 200             # up to 200 results
+ledger trades live --limit 0               # all trades (follows all pages)
+ledger trades live --json
+```
+
+#### Orders
+
+```bash
+ledger orders live                       # 50 most recent orders
+ledger orders live --status open         # open orders only
+ledger orders live --symbol BTC-USD
+ledger orders live --limit 0 --json      # all orders as JSON
+```
+
+#### Import
+
+```bash
+ledger import trades.json          # import historic trades from file
+ledger import trades.json --json   # show full response JSON
+```
+
+The file must be a JSON object with a `"trades"` array matching the [trade event format](#nats-trade-events). Prints `Total / Inserted / Duplicates / Errors` and exits non-zero if any errors occurred.
+
+#### Config
+
+```bash
+ledger config show                              # show all config values and sources
+ledger config set ledger_url https://...        # override service URL
+ledger config get ledger_url
+```
+
+Config file: `~/.config/ledger/config.yaml`
+
+| Key | Default | Env override |
+|-----|---------|-------------|
+| `ledger_url` | `https://signalngn-ledger-potbdcvufa-ew.a.run.app` | `LEDGER_URL` |
+| `api_key` | _(from `~/.config/sn/config.yaml`)_ | `LEDGER_API_KEY` |
+| `tenant_id` | _(resolved automatically)_ | `LEDGER_TENANT_ID` |
+
+#### Global flags
+
+```bash
+ledger --ledger-url http://localhost:8080 accounts list   # one-off URL override
+ledger --json accounts list                               # JSON output (any command)
+```
+
+---
 
 ## Local Development
 
-### 1. Start infrastructure
+### Prerequisites
+
+- Go 1.24+
+- [Task](https://taskfile.dev/)
+- Docker & Docker Compose
+
+### Quick start
 
 ```bash
-task infra:up
+task setup   # creates .env, installs deps, starts infra
+task dev     # run service with go run
 ```
 
-Starts PostgreSQL and NATS with JetStream. If spot-canvas-app containers are already running, the ledger will reuse them automatically (shared database by design).
+### Tasks
 
 ```bash
-task infra:status    # check what's running
-task infra:logs      # follow all container logs
-task db:logs         # PostgreSQL logs only
-task nats:logs       # NATS logs only
+task build            # build server binary → bin/ledger
+task build:cli        # build CLI binary → bin/ledger
+task build:all        # build both
+task dev              # run server with go run
+task test             # unit tests
+task test:v           # verbose
+task test:race        # with race detector
+task test:integration # requires running infra
+task test:all         # unit + integration + race
+task test:cover       # coverage report
+task fmt              # gofmt
+task lint             # go vet + staticcheck
+task infra:up         # start PostgreSQL + NATS
+task infra:down       # stop containers
+task infra:reset      # stop + delete volumes
+task infra:status     # show running containers
+task docker:build     # build Docker image
+task deploy:production # deploy to Cloud Run
 ```
 
-### 2. Configure environment
+### Architecture
 
-```bash
-task env
-# Edit .env if needed (defaults work with docker-compose)
+```
+cmd/ledger/          # CLI entry point
+cmd/ledgerd/         # Server entry point
+internal/
+├── config/          # Configuration loading
+├── domain/          # Core types: Trade, Position, Account, Order
+├── store/           # PostgreSQL repository, migrations
+├── ingest/          # NATS JetStream consumer, trade processing
+└── api/             # REST handlers, routing, middleware
+migrations/          # SQL migration files
 ```
 
-### 3. Run the service
+Data flow: `Trading Bot → NATS → Ingestion → PostgreSQL ← REST API ← CLI / Dashboard`
 
-```bash
-task dev
+---
+
+## NATS Trade Events
+
+The service subscribes to `ledger.trades.>`.
+
+**Subject format:** `ledger.trades.<account>.<market_type>`
+
+```json
+{
+  "tenant_id": "c2899e28-2bbe-47c1-8d29-84ee1a04fd37",
+  "trade_id": "unique-trade-id",
+  "account_id": "live",
+  "symbol": "BTC-USD",
+  "side": "buy",
+  "quantity": 0.5,
+  "price": 50000,
+  "fee": 25,
+  "fee_currency": "USD",
+  "market_type": "spot",
+  "timestamp": "2025-01-15T10:00:00Z"
+}
 ```
 
-The service will:
-- Apply database migrations automatically
-- Connect to NATS and start consuming trade events
-- Start the HTTP server on port 8080
+`tenant_id` is required. Futures trades additionally include `leverage`, `margin`, `liquidation_price`, and optionally `funding_fee`.
 
-For a compiled binary instead:
+---
 
-```bash
-task run
+## REST API
+
+**Production URL:** `https://signalngn-ledger-potbdcvufa-ew.a.run.app`
+
+All `/api/v1/` and `/auth/resolve` endpoints require `Authorization: Bearer <api-key>`.
+
+### Auth
+
 ```
-
-### 4. Run tests
-
-```bash
-# Unit tests
-task test
-
-# Unit tests (verbose)
-task test:v
-
-# Unit tests with race detector
-task test:race
-
-# Integration tests (requires infra running)
-task test:integration
-
-# All tests (unit + integration + race detector)
-task test:all
-
-# Coverage report
-task test:cover
+GET /auth/resolve
+→ {"tenant_id": "<uuid>"}
 ```
-
-### 5. Code quality
-
-```bash
-# Format all Go files
-task fmt
-
-# Run go vet + staticcheck
-task lint
-
-# All checks (fmt + vet + test)
-task check
-```
-
-### 6. Infrastructure management
-
-```bash
-task infra:up       # Start PostgreSQL + NATS (skips if spot-canvas-app is running)
-task infra:down     # Stop ledger containers (does not touch spot-canvas-app)
-task infra:reset    # Stop + remove volumes (clean slate)
-task infra:status   # Show which containers are running
-task infra:logs     # Follow all container logs
-task db:logs        # Follow PostgreSQL logs only
-task nats:logs      # Follow NATS logs only
-```
-
-## Available Tasks
-
-Run `task` or `task --list` to see all available tasks:
-
-| Task | Description |
-|------|-------------|
-| `task setup` | Full local setup (env + deps + infra) |
-| `task dev` | Run with `go run` |
-| `task build` | Build binary to `bin/ledger` |
-| `task run` | Build + run binary |
-| `task test` | Unit tests |
-| `task test:integration` | Integration tests |
-| `task test:all` | Unit + integration + race |
-| `task test:cover` | Tests with coverage report |
-| `task check` | fmt + vet + test |
-| `task infra:up` | Start PostgreSQL + NATS (reuses spot-canvas-app if running) |
-| `task infra:down` | Stop ledger containers |
-| `task infra:status` | Show running database & NATS containers |
-| `task infra:reset` | Stop + delete volumes |
-| `task docker:build` | Build Docker image |
-| `task docker:run` | Run Docker image locally |
-| `task deploy:staging` | Deploy to staging Cloud Run |
-| `task deploy:production` | Deploy to production Cloud Run |
-| `task clean` | Remove build artifacts |
-| `task deps` | Download + tidy Go modules |
-
-## API Endpoints
-
-**Base URL (staging):** `https://spot-canvas-ledger-staging-970386657060.europe-west3.run.app`
-
-Query endpoints are read-only (GET). The import endpoint (POST) allows bulk-loading historic trades.
 
 ### Health
 
 ```
 GET /health
+→ {"status": "ok"}
 ```
-
-Returns `{"status": "ok"}` when database and NATS are connected, `503` otherwise.
 
 ### Accounts
 
 ```
-GET /api/v1/accounts
-```
-
-Returns all trading accounts.
-
-### Portfolio Summary
-
-```
-GET /api/v1/accounts/{accountId}/portfolio
-```
-
-Returns open positions and aggregate realized P&L. Returns `404` if account not found.
-
-### Positions
-
-```
-GET /api/v1/accounts/{accountId}/positions?status=open
-```
-
-Query params:
-- `status`: `open` (default), `closed`, or `all`
-
-### Trades
-
-```
-GET /api/v1/accounts/{accountId}/trades?symbol=BTC-USD&limit=50
-```
-
-Query params:
-- `symbol`: Filter by trading pair
-- `side`: `buy` or `sell`
-- `market_type`: `spot` or `futures`
-- `start`: Start time (RFC3339)
-- `end`: End time (RFC3339)
-- `cursor`: Pagination cursor
-- `limit`: Results per page (default 50, max 200)
-
-### Orders
-
-```
-GET /api/v1/accounts/{accountId}/orders?status=open
-```
-
-Query params:
-- `status`: Filter by order status
-- `symbol`: Filter by trading pair
-- `cursor`: Pagination cursor
-- `limit`: Results per page (default 50, max 200)
-
-### Import Historic Trades
-
-```
+GET  /api/v1/accounts
+GET  /api/v1/accounts/{accountId}/portfolio
+GET  /api/v1/accounts/{accountId}/positions?status=open|closed|all
+GET  /api/v1/accounts/{accountId}/trades?symbol=&side=&market_type=&start=&end=&cursor=&limit=
+GET  /api/v1/accounts/{accountId}/orders?status=&symbol=&cursor=&limit=
 POST /api/v1/import
 ```
 
-Bulk-import historic trades. Trades are validated up front (the entire batch is rejected if any trade is invalid), sorted by timestamp, inserted idempotently, and positions are rebuilt from the full trade history after import.
-
-**Request body:**
+#### Import request body
 
 ```json
 {
   "trades": [
     {
+      "tenant_id": "c2899e28-2bbe-47c1-8d29-84ee1a04fd37",
       "trade_id": "t-001",
       "account_id": "live",
       "symbol": "BTC-USD",
@@ -233,126 +258,21 @@ Bulk-import historic trades. Trades are validated up front (the entire batch is 
       "fee_currency": "USD",
       "market_type": "spot",
       "timestamp": "2024-06-01T10:00:00Z"
-    },
-    {
-      "trade_id": "t-002",
-      "account_id": "live",
-      "symbol": "BTC-USD",
-      "side": "sell",
-      "quantity": 0.5,
-      "price": 45000,
-      "fee": 22.50,
-      "fee_currency": "USD",
-      "market_type": "spot",
-      "timestamp": "2024-07-01T10:00:00Z"
     }
   ]
 }
 ```
 
-**Response:**
+Max 1000 trades per request. Duplicate trade IDs are skipped. Re-importing is safe.
+
+#### Import response
 
 ```json
 {
-  "total": 2,
-  "inserted": 2,
+  "total": 1,
+  "inserted": 1,
   "duplicates": 0,
   "errors": 0,
-  "results": [
-    {"trade_id": "t-001", "status": "inserted"},
-    {"trade_id": "t-002", "status": "inserted"}
-  ]
+  "results": [{"trade_id": "t-001", "status": "inserted"}]
 }
 ```
-
-**Limits:** Max 1000 trades per request. Duplicate trade IDs are skipped (status `"duplicate"`). Re-importing the same trades is safe.
-
-**Example with curl:**
-
-```bash
-curl -X POST https://spot-canvas-ledger-staging-970386657060.europe-west3.run.app/api/v1/import \
-  -H "Content-Type: application/json" \
-  -d '{"trades": [{"trade_id":"t-001","account_id":"live","symbol":"BTC-USD","side":"buy","quantity":0.5,"price":40000,"fee":20,"fee_currency":"USD","market_type":"spot","timestamp":"2024-06-01T10:00:00Z"}]}'
-```
-
-## NATS Trade Events
-
-The service subscribes to `ledger.trades.>` for trade events.
-
-### Subject Format
-
-```
-ledger.trades.<account>.<market_type>
-```
-
-Examples:
-- `ledger.trades.live.spot`
-- `ledger.trades.paper.futures`
-
-### Message Format
-
-```json
-{
-  "trade_id": "unique-trade-id",
-  "account_id": "live",
-  "symbol": "BTC-USD",
-  "side": "buy",
-  "quantity": 0.5,
-  "price": 50000,
-  "fee": 25,
-  "fee_currency": "USD",
-  "market_type": "spot",
-  "timestamp": "2025-01-15T10:00:00Z",
-  "leverage": null,
-  "margin": null,
-  "liquidation_price": null,
-  "funding_fee": null
-}
-```
-
-Futures trades include `leverage`, `margin`, `liquidation_price`, and optionally `funding_fee`.
-
-## Deployment
-
-### Staging
-
-```bash
-task deploy:staging
-```
-
-### Production
-
-```bash
-task deploy:production
-```
-
-The service deploys to Cloud Run (europe-west3) and shares the existing Cloud SQL instance with spot-canvas-app. All tables are prefixed with `ledger_` to avoid collisions.
-
-### Docker
-
-```bash
-# Build image locally
-task docker:build
-
-# Run locally (connects to host network)
-task docker:run
-```
-
-### Environment Variables
-
-See [.env.example](.env.example) for all configuration options.
-
-## Architecture
-
-```
-cmd/ledger/          # Entry point
-internal/
-├── config/          # Configuration loading
-├── domain/          # Core types: Trade, Position, Account, Order
-├── store/           # PostgreSQL repository, migrations
-├── ingest/          # NATS JetStream consumer, trade processing
-└── api/             # REST handlers, routing, middleware
-migrations/          # SQL migration files
-```
-
-Data flow: `Trading Bot → NATS → Ingestion → PostgreSQL ← REST API ← Dashboard`
