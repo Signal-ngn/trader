@@ -47,7 +47,7 @@ var portfolioCmd = &cobra.Command{
 				fmt.Fprintln(os.Stderr, "account not found")
 				os.Exit(1)
 			}
-			cmd.Print(string(raw))
+			fmt.Print(string(raw))
 			return nil
 		}
 

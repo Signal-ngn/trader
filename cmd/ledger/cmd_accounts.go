@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -30,7 +31,7 @@ var accountsListCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			cmd.Print(string(raw))
+			fmt.Print(string(raw))
 			return nil
 		}
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/url"
 
 	"github.com/spf13/cobra"
@@ -26,7 +27,7 @@ var positionsCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			cmd.Print(string(raw))
+			fmt.Print(string(raw))
 			return nil
 		}
 
