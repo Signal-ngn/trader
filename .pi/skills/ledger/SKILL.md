@@ -6,7 +6,7 @@ allowed-tools: Bash
 
 # ledger — Spot Canvas Trading Ledger CLI
 
-`ledger` is the command-line interface for the Spot Canvas ledger service. Trading bots use it to record executed trades (via NATS or the import endpoint), query live portfolio state, and inspect trade history.
+`ledger` is the command-line interface for the Spot Canvas ledger service. Trading bots use it to record executed trades, query live portfolio state, and inspect trade history.
 
 ## Prerequisites
 
@@ -106,18 +106,79 @@ ledger positions live --json | jq '.[] | select(.symbol == "BTC-USD" and .status
 
 ## Trades
 
+### List trades
+
 ```bash
-ledger trades live                           # 50 most recent trades (default)
-ledger trades live --symbol BTC-USD          # filter by symbol
-ledger trades live --side buy                # filter by side: buy or sell
-ledger trades live --market-type futures     # filter by market type
-ledger trades live --start 2025-01-01T00:00:00Z --end 2025-02-01T00:00:00Z
-ledger trades live --limit 200              # up to 200 results
-ledger trades live --limit 0                # all trades (follows all cursor pages)
-ledger trades live --json
+ledger trades list <account-id>                              # 50 most recent trades (default)
+ledger trades list live --symbol BTC-USD                     # filter by symbol
+ledger trades list live --side buy                           # filter by side: buy or sell
+ledger trades list live --market-type futures                # filter by market type
+ledger trades list live --start 2025-01-01T00:00:00Z --end 2025-02-01T00:00:00Z
+ledger trades list live --limit 200                          # up to 200 results
+ledger trades list live --limit 0                            # all trades (follows all cursor pages)
+ledger trades list live --json
 ```
 
-**Trade fields:**
+### Record a single trade
+
+```bash
+ledger trades add <account-id> --symbol BTC-USD --side buy --quantity 0.1 --price 95000
+```
+
+**Required flags:** `--symbol`, `--side`, `--quantity`, `--price`
+
+**Optional flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--trade-id` | auto-generated UUID | Unique trade identifier |
+| `--fee` | `0` | Fee paid |
+| `--fee-currency` | `USD` | Fee currency |
+| `--market-type` | `spot` | `spot` or `futures` |
+| `--timestamp` | now | Execution time (RFC3339) |
+| `--strategy` | | Strategy name |
+| `--entry-reason` | | Why the position was entered |
+| `--exit-reason` | | Why the position was exited |
+| `--confidence` | | Signal confidence (0–1) |
+| `--stop-loss` | | Stop-loss price |
+| `--take-profit` | | Take-profit price |
+| `--leverage` | | Leverage multiplier (futures) |
+| `--margin` | | Margin used (futures) |
+| `--liquidation-price` | | Liquidation price (futures) |
+| `--funding-fee` | | Funding fee (futures) |
+
+**Examples:**
+
+```bash
+# Spot buy with strategy metadata
+ledger trades add live \
+  --symbol BTC-USD --side buy --quantity 0.1 --price 95000 \
+  --fee 9.50 --strategy macd_momentum --confidence 0.78 \
+  --stop-loss 93000 --take-profit 99000
+
+# Spot sell (exit)
+ledger trades add live \
+  --symbol BTC-USD --side sell --quantity 0.1 --price 98000 \
+  --fee 9.80 --exit-reason "take-profit hit"
+
+# Futures long with leverage
+ledger trades add live \
+  --symbol BTC-USD --side buy --quantity 0.5 --price 95000 \
+  --market-type futures --leverage 10 --margin 4750
+
+# With explicit trade ID and timestamp
+ledger trades add paper \
+  --trade-id "bot-20250201-042" \
+  --symbol ETH-USD --side buy --quantity 1.0 --price 3200 \
+  --timestamp 2025-02-01T10:30:00Z
+
+# JSON output
+ledger trades add live --symbol BTC-USD --side buy --quantity 0.1 --price 95000 --json
+```
+
+**Trade is idempotent** — re-submitting the same `--trade-id` is safe, returns duplicate status.
+
+### Trade fields (list output)
 
 | Field | Description |
 |-------|-------------|
@@ -142,7 +203,7 @@ ledger trades live --json
 **Pattern — get the last trade for a symbol:**
 
 ```bash
-ledger trades live --symbol BTC-USD --limit 1 --json | jq '.[0]'
+ledger trades list live --symbol BTC-USD --limit 1 --json | jq '.[0]'
 ```
 
 ---
@@ -235,47 +296,6 @@ ledger --json <any-command>                               # JSON output
 
 ---
 
-## NATS Trade Event Format
-
-Trading bots that publish trades directly to NATS (rather than using the import endpoint) must include `tenant_id` in every message. The NATS subject pattern is:
-
-```
-ledger.trades.<account_id>.<market_type>
-```
-
-Examples:
-```
-ledger.trades.live.spot
-ledger.trades.live.futures
-ledger.trades.paper.spot
-```
-
-**Message payload:**
-
-```json
-{
-  "tenant_id": "c2899e28-2bbe-47c1-8d29-84ee1a04fd37",
-  "trade_id": "unique-id",
-  "account_id": "live",
-  "symbol": "BTC-USD",
-  "side": "buy",
-  "quantity": 0.1,
-  "price": 95000,
-  "fee": 9.50,
-  "fee_currency": "USD",
-  "market_type": "spot",
-  "timestamp": "2025-01-01T10:00:00Z",
-  "strategy": "macd_momentum",
-  "confidence": 0.78,
-  "stop_loss": 93000,
-  "take_profit": 99000
-}
-```
-
-Messages without a valid `tenant_id` UUID are rejected (`Nack`ed with `Term`).
-
----
-
 ## Trading Bot Patterns
 
 ### Check exposure before entering a trade
@@ -286,11 +306,21 @@ SIZE=$(ledger positions live --json | jq '[.[] | select(.symbol == "BTC-USD" and
 echo "Current BTC exposure: $SIZE"
 ```
 
+### Record a trade immediately after execution
+
+```bash
+ledger trades add live \
+  --trade-id "$EXCHANGE_ORDER_ID" \
+  --symbol BTC-USD --side buy --quantity 0.1 --price 95000 \
+  --fee 9.50 --strategy macd_momentum --confidence 0.78 \
+  --stop-loss 93000 --take-profit 99000
+```
+
 ### Get realized P&L for the day
 
 ```bash
 TODAY=$(date -u +%Y-%m-%dT00:00:00Z)
-ledger trades live --start "$TODAY" --json | \
+ledger trades list live --start "$TODAY" --json | \
   jq '[.[] | select(.side == "sell")] | map(.realized_pnl) | add // 0'
 ```
 
@@ -298,7 +328,7 @@ ledger trades live --start "$TODAY" --json | \
 
 ```bash
 # After placing a trade with trade_id "cb-20250201-042"
-ledger trades live --json | jq '.[] | select(.trade_id == "cb-20250201-042")'
+ledger trades list live --json | jq '.[] | select(.trade_id == "cb-20250201-042")'
 ```
 
 ### Import a day's trades from a file
