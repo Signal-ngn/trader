@@ -85,14 +85,29 @@ ledger positions live --json
 #### Trades
 
 ```bash
-ledger trades live                          # 50 most recent trades
-ledger trades live --symbol BTC-USD         # filter by symbol
-ledger trades live --side buy               # filter by side
-ledger trades live --market-type futures    # filter by market type
-ledger trades live --start 2025-01-01T00:00:00Z --end 2025-02-01T00:00:00Z
-ledger trades live --limit 200             # up to 200 results
-ledger trades live --limit 0               # all trades (follows all pages)
-ledger trades live --json
+# List trades
+ledger trades list live                         # 50 most recent trades
+ledger trades list live --symbol BTC-USD        # filter by symbol
+ledger trades list live --side buy              # filter by side
+ledger trades list live --market-type futures   # filter by market type
+ledger trades list live --start 2025-01-01T00:00:00Z --end 2025-02-01T00:00:00Z
+ledger trades list live --limit 200             # up to 200 results
+ledger trades list live --limit 0               # all trades (follows all pages)
+ledger trades list live --json
+
+# Record a trade
+ledger trades add live --symbol BTC-USD --side buy --quantity 0.1 --price 95000
+
+# With fees and strategy metadata
+ledger trades add live \
+  --symbol BTC-USD --side buy --quantity 0.1 --price 95000 \
+  --fee 9.50 --strategy macd_momentum --confidence 0.78 \
+  --stop-loss 93000 --take-profit 99000
+
+# Futures long with leverage
+ledger trades add live \
+  --symbol BTC-USD --side buy --quantity 0.5 --price 95000 \
+  --market-type futures --leverage 10 --margin 4750
 ```
 
 #### Orders
@@ -138,19 +153,27 @@ ledger --json accounts list                               # JSON output (any com
 
 ---
 
-## Agent Skill (pi)
+## Agent Skill
 
-The ledger ships a [pi](https://github.com/mariozechner/pi) agent skill that gives AI coding agents full knowledge of the `ledger` CLI — commands, flags, trade event format, and bot patterns. Install it so your agent can record trades and query portfolio state without needing to look anything up.
+The ledger ships an [agent skill](https://agentskills.io) that gives AI coding agents full knowledge of the `ledger` CLI — commands, flags, trade event format, and bot patterns. Install it so your agent can record trades and query portfolio state without needing to look anything up.
+
+Works with Claude Code, Cursor, pi, Windsurf, Codex, and [many more](https://github.com/vercel-labs/skills).
 
 ### Install
 
 ```bash
-pi skill install https://github.com/Spot-Canvas/ledger
+npx skills add Spot-Canvas/ledger
+```
+
+For global installation (available in all projects):
+
+```bash
+npx skills add Spot-Canvas/ledger -g
 ```
 
 ### Usage
 
-Once installed the skill is available as **`ledger`** in pi. Invoke it in any conversation where the agent needs to interact with the ledger:
+Once installed the skill is available as **`ledger`** in your agent. Invoke it in any conversation where the agent needs to interact with the ledger:
 
 ```
 Use the ledger skill to check my open positions before placing this trade.
