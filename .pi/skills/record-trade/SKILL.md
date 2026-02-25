@@ -197,6 +197,36 @@ curl -s -X POST "${LEDGER_URL:-https://spot-canvas-ledger-staging-uumkospiua-ey.
 
 After recording trades, you can query positions and trade history.
 
+### Get account stats (win rate, realized P&L, trade count)
+
+REST endpoint — returns aggregate stats computed from round-trips (closed positions):
+
+```bash
+curl -s "${LEDGER_URL:-https://spot-canvas-ledger-staging-uumkospiua-ey.a.run.app}/api/v1/accounts/live/stats" | python3 -m json.tool
+```
+
+Response:
+```json
+{
+  "total_trades": 116,
+  "closed_trades": 109,
+  "win_count": 79,
+  "loss_count": 30,
+  "win_rate": 0.7248,
+  "total_realized_pnl": 2555.28,
+  "open_positions": 7
+}
+```
+
+`total_trades` = closed + open positions (round-trips, not raw buy/sell records).
+
+CLI equivalent:
+
+```bash
+ledger accounts show live            # human-readable table
+ledger accounts show live --json     # raw JSON
+```
+
 ### Check open positions
 
 ```bash
@@ -225,6 +255,21 @@ curl -s "${LEDGER_URL:-https://spot-canvas-ledger-staging-uumkospiua-ey.a.run.ap
 
 ```bash
 curl -s "${LEDGER_URL:-https://spot-canvas-ledger-staging-uumkospiua-ey.a.run.app}/api/v1/accounts/live/trades?symbol=BTC-USD&limit=20" | python3 -m json.tool
+```
+
+## `ledger` CLI Reference
+
+The `ledger` CLI wraps the REST API for human use. Key commands:
+
+```bash
+ledger accounts list                 # list all accounts for the tenant
+ledger accounts show <account-id>    # show aggregate stats (win rate, P&L, trade count)
+ledger accounts show <account-id> --json  # raw JSON stats
+
+ledger trades list --account live    # list recent trades
+ledger positions list --account live # list positions
+
+ledger import --file trades.csv      # bulk import trades from CSV
 ```
 
 ## Important Notes
