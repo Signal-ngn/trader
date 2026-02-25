@@ -83,7 +83,7 @@ if [[ "$ENV" == "staging" ]]; then
     REPOSITORY="${REPOSITORY:-ledger}"
 else
     SERVICE_NAME="spot-canvas-ledger"
-    SECRET_PREFIX="spot-canvas"
+    SECRET_PREFIX="signalngn-prod"
     REGION="europe-west1"
     REPOSITORY="${REPOSITORY:-signalngn}"
 fi
