@@ -27,7 +27,7 @@ PROJECT="${GCP_PROJECT:-spotcanvas-staging}"
 REGION="europe-west3"
 ENV="staging"
 TAG="staging"
-REPOSITORY="spot-canvas"
+REPOSITORY=""
 IMAGE_NAME="ledger"
 DRY_RUN=false
 PUSH_ONLY=false
@@ -76,20 +76,23 @@ if [[ -z "$PROJECT" ]]; then
     exit 1
 fi
 
+# Env-specific overrides (must come before derived values)
+if [[ "$ENV" == "staging" ]]; then
+    SERVICE_NAME="spot-canvas-ledger-staging"
+    SECRET_PREFIX="spot-canvas-staging"
+    REPOSITORY="${REPOSITORY:-ledger}"
+else
+    SERVICE_NAME="spot-canvas-ledger"
+    SECRET_PREFIX="spot-canvas"
+    REGION="europe-west1"
+    REPOSITORY="${REPOSITORY:-signalngn}"
+fi
+
 # Derived values
 ARTIFACT_REGISTRY="${REGION}-docker.pkg.dev/${PROJECT}/${REPOSITORY}"
 IMAGE_URL="${ARTIFACT_REGISTRY}/${IMAGE_NAME}"
 GIT_COMMIT=$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-if [[ "$ENV" == "staging" ]]; then
-    SERVICE_NAME="spot-canvas-ledger-staging"
-    SECRET_PREFIX="spot-canvas-staging"
-else
-    SERVICE_NAME="spot-canvas-ledger"
-    SECRET_PREFIX="spot-canvas"
-fi
-
 CLOUDSQL_INSTANCE="${PROJECT}:${REGION}:spot-canvas-db"
 
 echo ""
