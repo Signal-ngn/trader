@@ -189,20 +189,20 @@ func (r *Repository) upsertFuturesPosition(ctx context.Context, tx pgx.Tx, trade
 
 	// Closing (partially or fully)
 	// P&L is in margin (account-impact) terms, not full notional.
-	//
-	// Scale factor priority:
-	//   1. explicit leverage on position: scale = 1 / leverage
-	//   2. margin on position:            scale = margin / cost_basis
-	//   3. margin on trade:               scale = margin / cost_basis
-	//   4. fallback:                      scale = 1 (notional = account impact, e.g. 1x)
-	scale := 1.0
-	if pos.Leverage != nil && *pos.Leverage > 1 {
-		scale = 1.0 / float64(*pos.Leverage)
-	} else if pos.Margin != nil && *pos.Margin > 0 && pos.CostBasis > 0 {
-		scale = *pos.Margin / pos.CostBasis
-	} else if trade.Margin != nil && *trade.Margin > 0 && pos.CostBasis > 0 {
-		scale = *trade.Margin / pos.CostBasis
+	// scale = 1/leverage.
+	// Priority: stored position leverage → closing trade leverage → default 2x.
+	// Default 2x because all current trading configs use 2x leverage and the
+	// bot inconsistently omits the leverage field on some symbols (e.g. AVAX).
+	const defaultLeverage = 2
+	levVal := defaultLeverage
+	lev := pos.Leverage
+	if lev == nil {
+		lev = trade.Leverage
 	}
+	if lev != nil && *lev > 0 {
+		levVal = *lev
+	}
+	scale := 1.0 / float64(levVal)
 
 	var realizedPnL float64
 	if pos.Side == domain.PositionSideLong {

@@ -72,8 +72,9 @@ func main() {
 	// If a positions-rebuild migration was just applied, replay all trades
 	// through the updated P&L logic.
 	rebuildMigrations := map[string]bool{
-		"004_rebuild_positions_margin_pnl":   true,
-		"005_rebuild_positions_margin_scale": true,
+		"004_rebuild_positions_margin_pnl":          true,
+		"005_rebuild_positions_margin_scale":         true,
+		"006_rebuild_positions_default_leverage":     true,
 	}
 	for _, v := range migrated {
 		if rebuildMigrations[v] {
