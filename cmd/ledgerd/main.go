@@ -85,25 +85,11 @@ func main() {
 	// Initialise UserRepository (shares the same pool — same DB as spot-canvas-app)
 	userRepo := store.NewUserRepository(repo.Pool())
 
-	// Connect to NATS
-	nc, err := ingest.ConnectNATS(cfg.NATSURLs, cfg.NATSCredsFile, cfg.NATSCreds)
-	if err != nil {
-		log.Fatal().Err(err).Msg("failed to connect to NATS")
-	}
-	defer nc.Close()
-	log.Info().Str("url", nc.ConnectedUrl()).Msg("connected to NATS")
-
-	// Start NATS consumer
-	consumer := ingest.NewConsumer(nc, repo)
-	go func() {
-		if err := consumer.Start(ctx); err != nil {
-			log.Error().Err(err).Msg("NATS consumer error")
-		}
-	}()
-
-	// Start HTTP server
+	// Start HTTP server immediately so Cloud Run health checks pass while NATS
+	// is still connecting. The server runs without NATS initially; the consumer
+	// is wired in once NATS connects (below).
 	defaultTenantID := uuid.MustParse(middleware.DefaultTenantID.String())
-	srv := api.NewServer(repo, userRepo, nc, cfg.EnforceAuth, defaultTenantID)
+	srv := api.NewServer(repo, userRepo, nil, cfg.EnforceAuth, defaultTenantID)
 	httpServer := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,
 		Handler: srv.Router(),
@@ -113,6 +99,24 @@ func main() {
 		log.Info().Str("port", cfg.HTTPPort).Msg("starting HTTP server")
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal().Err(err).Msg("HTTP server error")
+		}
+	}()
+
+	// Connect to NATS in the background so startup doesn't block.
+	// The consumer starts automatically once connected.
+	go func() {
+		nc, err := ingest.ConnectNATS(cfg.NATSURLs, cfg.NATSCredsFile, cfg.NATSCreds)
+		if err != nil {
+			// ConnectNATS retries forever; this path is unreachable in practice.
+			log.Error().Err(err).Msg("failed to connect to NATS")
+			return
+		}
+		defer nc.Close()
+		log.Info().Str("url", nc.ConnectedUrl()).Msg("connected to NATS")
+
+		consumer := ingest.NewConsumer(nc, repo)
+		if err := consumer.Start(ctx); err != nil {
+			log.Error().Err(err).Msg("NATS consumer error")
 		}
 	}()
 
