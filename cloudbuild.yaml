@@ -8,7 +8,6 @@ substitutions:
   _REGION: europe-west3
   _ENV: staging
   _SERVICE_PREFIX: spot-canvas-ledger
-  _ARTIFACT_REGISTRY: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/spot-canvas
   _IMAGE_NAME: ledger
   _MEMORY: "256Mi"
   _CPU: "1"
@@ -27,9 +26,9 @@ steps:
     args:
       - build
       - -t
-      - ${_ARTIFACT_REGISTRY}/${_IMAGE_NAME}:${SHORT_SHA}
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/spot-canvas/${_IMAGE_NAME}:${SHORT_SHA}
       - -t
-      - ${_ARTIFACT_REGISTRY}/${_IMAGE_NAME}:latest
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/spot-canvas/${_IMAGE_NAME}:latest
       - .
 
   # Step 2: Push the image to Artifact Registry
@@ -38,7 +37,7 @@ steps:
     args:
       - push
       - --all-tags
-      - ${_ARTIFACT_REGISTRY}/${_IMAGE_NAME}
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/spot-canvas/${_IMAGE_NAME}
     waitFor:
       - build
 
@@ -67,7 +66,7 @@ steps:
         gcloud run deploy "$$SERVICE_NAME" \
           --project="${PROJECT_ID}" \
           --region="${_REGION}" \
-          --image="${_ARTIFACT_REGISTRY}/${_IMAGE_NAME}:${SHORT_SHA}" \
+          --image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/spot-canvas/${_IMAGE_NAME}:${SHORT_SHA}" \
           --platform=managed \
           --memory="${_MEMORY}" \
           --cpu="${_CPU}" \
@@ -90,7 +89,7 @@ steps:
       - push
 
 images:
-  - ${_ARTIFACT_REGISTRY}/${_IMAGE_NAME}:${SHORT_SHA}
-  - ${_ARTIFACT_REGISTRY}/${_IMAGE_NAME}:latest
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/spot-canvas/${_IMAGE_NAME}:${SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/spot-canvas/${_IMAGE_NAME}:latest
 
 timeout: 600s
