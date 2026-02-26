@@ -23,21 +23,23 @@ steps:
   # Step 1: Build the Docker image
   - name: gcr.io/cloud-builders/docker
     id: build
+    entrypoint: bash
     args:
-      - build
-      - -t
-      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/spot-canvas/${_IMAGE_NAME}:${SHORT_SHA}
-      - -t
-      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/spot-canvas/${_IMAGE_NAME}:latest
-      - .
+      - -c
+      - |
+        IMAGE="${_REGION}-docker.pkg.dev/${PROJECT_ID}/spot-canvas/${_IMAGE_NAME}"
+        SHA="${SHORT_SHA:-latest}"
+        docker build -t "$$IMAGE:$$SHA" -t "$$IMAGE:latest" .
 
   # Step 2: Push the image to Artifact Registry
   - name: gcr.io/cloud-builders/docker
     id: push
+    entrypoint: bash
     args:
-      - push
-      - --all-tags
-      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/spot-canvas/${_IMAGE_NAME}
+      - -c
+      - |
+        IMAGE="${_REGION}-docker.pkg.dev/${PROJECT_ID}/spot-canvas/${_IMAGE_NAME}"
+        docker push --all-tags "$$IMAGE"
     waitFor:
       - build
 
@@ -66,7 +68,7 @@ steps:
         gcloud run deploy "$$SERVICE_NAME" \
           --project="${PROJECT_ID}" \
           --region="${_REGION}" \
-          --image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/spot-canvas/${_IMAGE_NAME}:${SHORT_SHA}" \
+          --image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/spot-canvas/${_IMAGE_NAME}:latest" \
           --platform=managed \
           --memory="${_MEMORY}" \
           --cpu="${_CPU}" \
@@ -88,8 +90,6 @@ steps:
     waitFor:
       - push
 
-images:
-  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/spot-canvas/${_IMAGE_NAME}:${SHORT_SHA}
-  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/spot-canvas/${_IMAGE_NAME}:latest
+# images block omitted — push step handles tagging and uploading directly
 
 timeout: 600s
