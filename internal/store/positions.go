@@ -3,12 +3,26 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/Spot-Canvas/ledger/internal/domain"
 )
+
+// PositionFilter defines filters for listing positions.
+type PositionFilter struct {
+	Status string // "open", "closed", "all" (default: "open")
+	Limit  int    // 0 means use default (50); max 200
+	Cursor string
+}
+
+// PositionListResult contains paginated position results.
+type PositionListResult struct {
+	Positions  []domain.Position `json:"positions"`
+	NextCursor string            `json:"next_cursor,omitempty"`
+}
 
 // UpsertPosition creates or updates a position based on the trade.
 // Must be called within a transaction.
@@ -174,13 +188,21 @@ func (r *Repository) upsertFuturesPosition(ctx context.Context, tx pgx.Tx, trade
 	}
 
 	// Closing (partially or fully)
+	// P&L is computed in margin terms (account-impact), not full notional.
+	// With leverage L: margin_pnl = notional_pnl / L
+	// When leverage is unknown (nil or 0) we fall back to notional P&L (1x effective).
+	lev := 1
+	if pos.Leverage != nil && *pos.Leverage > 1 {
+		lev = *pos.Leverage
+	}
+
 	var realizedPnL float64
 	if pos.Side == domain.PositionSideLong {
-		realizedPnL = (trade.Price - pos.AvgEntryPrice) * trade.Quantity
+		realizedPnL = (trade.Price - pos.AvgEntryPrice) * trade.Quantity / float64(lev)
 	} else {
-		realizedPnL = (pos.AvgEntryPrice - trade.Price) * trade.Quantity
+		realizedPnL = (pos.AvgEntryPrice - trade.Price) * trade.Quantity / float64(lev)
 	}
-	// Subtract fees and funding fees
+	// Subtract fees and funding fees (already in account terms — not notional)
 	realizedPnL -= trade.Fee
 	if trade.FundingFee != nil {
 		realizedPnL -= *trade.FundingFee
@@ -236,34 +258,62 @@ func (r *Repository) InsertTradeAndUpdatePosition(ctx context.Context, tenantID 
 	return inserted, nil
 }
 
-// ListPositions returns positions for a tenant/account with optional status filter.
-func (r *Repository) ListPositions(ctx context.Context, tenantID uuid.UUID, accountID string, status string) ([]domain.Position, error) {
-	var query string
-	var args []interface{}
-
-	if status == "" || status == "all" {
-		query = `
-			SELECT id, account_id, symbol, market_type, side, quantity, avg_entry_price,
-				cost_basis, realized_pnl, leverage, margin, liquidation_price,
-				status, opened_at, closed_at,
-				exit_price, exit_reason, stop_loss, take_profit, confidence
-			FROM ledger_positions
-			WHERE tenant_id = $1 AND account_id = $2
-			ORDER BY opened_at DESC
-		`
-		args = []interface{}{tenantID, accountID}
-	} else {
-		query = `
-			SELECT id, account_id, symbol, market_type, side, quantity, avg_entry_price,
-				cost_basis, realized_pnl, leverage, margin, liquidation_price,
-				status, opened_at, closed_at,
-				exit_price, exit_reason, stop_loss, take_profit, confidence
-			FROM ledger_positions
-			WHERE tenant_id = $1 AND account_id = $2 AND status = $3
-			ORDER BY opened_at DESC
-		`
-		args = []interface{}{tenantID, accountID, status}
+// ListPositions returns positions for a tenant/account with optional status filter and cursor pagination.
+func (r *Repository) ListPositions(ctx context.Context, tenantID uuid.UUID, accountID string, filter PositionFilter) (*PositionListResult, error) {
+	if filter.Limit <= 0 {
+		filter.Limit = 50
 	}
+	if filter.Limit > 200 {
+		filter.Limit = 200
+	}
+	status := filter.Status
+	if status == "" {
+		status = "open"
+	}
+
+	var conditions []string
+	var args []interface{}
+	argIdx := 1
+
+	conditions = append(conditions, fmt.Sprintf("tenant_id = $%d", argIdx))
+	args = append(args, tenantID)
+	argIdx++
+
+	conditions = append(conditions, fmt.Sprintf("account_id = $%d", argIdx))
+	args = append(args, accountID)
+	argIdx++
+
+	if status != "all" {
+		conditions = append(conditions, fmt.Sprintf("status = $%d", argIdx))
+		args = append(args, status)
+		argIdx++
+	}
+
+	// Cursor-based pagination: cursor encodes (opened_at, id)
+	if filter.Cursor != "" {
+		cursorTS, cursorID, err := decodeCursor(filter.Cursor)
+		if err != nil {
+			return nil, fmt.Errorf("invalid cursor: %w", err)
+		}
+		conditions = append(conditions, fmt.Sprintf(
+			"(opened_at, id) < ($%d, $%d)", argIdx, argIdx+1,
+		))
+		args = append(args, cursorTS, cursorID)
+		argIdx += 2
+	}
+
+	where := strings.Join(conditions, " AND ")
+	query := fmt.Sprintf(`
+		SELECT id, account_id, symbol, market_type, side, quantity, avg_entry_price,
+			cost_basis, realized_pnl, leverage, margin, liquidation_price,
+			status, opened_at, closed_at,
+			exit_price, exit_reason, stop_loss, take_profit, confidence
+		FROM ledger_positions
+		WHERE %s
+		ORDER BY opened_at DESC, id DESC
+		LIMIT $%d
+	`, where, argIdx)
+	args = append(args, filter.Limit+1) // fetch one extra to detect next page
 
 	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
@@ -291,10 +341,17 @@ func (r *Repository) ListPositions(ctx context.Context, tenantID uuid.UUID, acco
 		positions = append(positions, p)
 	}
 
-	if positions == nil {
-		positions = []domain.Position{}
+	result := &PositionListResult{}
+	if len(positions) > filter.Limit {
+		positions = positions[:filter.Limit]
+		last := positions[len(positions)-1]
+		result.NextCursor = encodeCursor(last.OpenedAt, last.ID)
 	}
-	return positions, nil
+	result.Positions = positions
+	if result.Positions == nil {
+		result.Positions = []domain.Position{}
+	}
+	return result, nil
 }
 
 // PortfolioSummary holds the portfolio summary for an account.
@@ -305,10 +362,11 @@ type PortfolioSummary struct {
 
 // GetPortfolioSummary returns open positions and aggregate realized P&L for a tenant/account.
 func (r *Repository) GetPortfolioSummary(ctx context.Context, tenantID uuid.UUID, accountID string) (*PortfolioSummary, error) {
-	positions, err := r.ListPositions(ctx, tenantID, accountID, "open")
+	result, err := r.ListPositions(ctx, tenantID, accountID, PositionFilter{Status: "open", Limit: 200})
 	if err != nil {
 		return nil, err
 	}
+	positions := result.Positions
 
 	// Get total realized P&L across all positions (open and closed) for this tenant/account
 	var totalPnL float64
@@ -324,6 +382,41 @@ func (r *Repository) GetPortfolioSummary(ctx context.Context, tenantID uuid.UUID
 		Positions:        positions,
 		TotalRealizedPnL: totalPnL,
 	}, nil
+}
+
+// RebuildAllPositions rebuilds positions for every (tenant, account) pair that
+// has trades. This is used after schema migrations that change P&L semantics
+// (e.g. switching from notional to margin-adjusted P&L for futures).
+func (r *Repository) RebuildAllPositions(ctx context.Context) error {
+	// Collect distinct (tenant_id, account_id) pairs from trades.
+	rows, err := r.pool.Query(ctx,
+		"SELECT DISTINCT tenant_id, account_id FROM ledger_trades ORDER BY tenant_id, account_id",
+	)
+	if err != nil {
+		return fmt.Errorf("list tenant/account pairs: %w", err)
+	}
+	type pair struct {
+		tenantID  uuid.UUID
+		accountID string
+	}
+	var pairs []pair
+	for rows.Next() {
+		var p pair
+		if err := rows.Scan(&p.tenantID, &p.accountID); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan pair: %w", err)
+		}
+		pairs = append(pairs, p)
+	}
+	rows.Close()
+
+	for _, p := range pairs {
+		if err := r.RebuildPositions(ctx, p.tenantID, p.accountID); err != nil {
+			return fmt.Errorf("rebuild positions for tenant=%s account=%s: %w",
+				p.tenantID, p.accountID, err)
+		}
+	}
+	return nil
 }
 
 // RebuildPositions deletes all positions for a tenant/account and replays trades chronologically.

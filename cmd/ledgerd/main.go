@@ -63,10 +63,24 @@ func main() {
 	log.Info().Msg("connected to PostgreSQL")
 
 	// Run migrations
-	if err := store.RunMigrations(ctx, repo.Pool()); err != nil {
+	migrated, err := store.RunMigrationsWithReport(ctx, repo.Pool())
+	if err != nil {
 		log.Fatal().Err(err).Msg("failed to run migrations")
 	}
 	log.Info().Msg("migrations complete")
+
+	// If migration 004 was just applied (positions were truncated), rebuild all
+	// positions from trades using the corrected margin-adjusted P&L logic.
+	for _, v := range migrated {
+		if v == "004_rebuild_positions_margin_pnl" {
+			log.Info().Msg("migration 004 applied — rebuilding all positions with margin-adjusted P&L")
+			if err := repo.RebuildAllPositions(ctx); err != nil {
+				log.Fatal().Err(err).Msg("failed to rebuild positions after migration 004")
+			}
+			log.Info().Msg("position rebuild complete")
+			break
+		}
+	}
 
 	// Initialise UserRepository (shares the same pool — same DB as spot-canvas-app)
 	userRepo := store.NewUserRepository(repo.Pool())
