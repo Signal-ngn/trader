@@ -78,7 +78,9 @@ func (s *Server) handlePortfolioSummary(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleListPositions(w http.ResponseWriter, r *http.Request) {
 	tenantID := middleware.TenantIDFromContext(r.Context())
 	accountID := chi.URLParam(r, "accountId")
-	status := r.URL.Query().Get("status")
+	q := r.URL.Query()
+
+	status := q.Get("status")
 	if status == "" {
 		status = "open"
 	}
@@ -89,12 +91,30 @@ func (s *Server) handleListPositions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	positions, err := s.repo.ListPositions(r.Context(), tenantID, accountID, status)
+	filter := store.PositionFilter{
+		Status: status,
+		Cursor: q.Get("cursor"),
+	}
+
+	if limitStr := q.Get("limit"); limitStr != "" {
+		limit, err := strconv.Atoi(limitStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid limit")
+			return
+		}
+		filter.Limit = limit
+	}
+
+	result, err := s.repo.ListPositions(r.Context(), tenantID, accountID, filter)
 	if err != nil {
+		if strings.Contains(err.Error(), "invalid cursor") {
+			writeError(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to list positions")
 		return
 	}
-	writeJSON(w, http.StatusOK, positions)
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleListTrades(w http.ResponseWriter, r *http.Request) {

@@ -331,3 +331,53 @@ Max 1000 trades per request. Duplicate trade IDs are skipped. Re-importing is sa
   "results": [{"trade_id": "t-001", "status": "inserted"}]
 }
 ```
+
+---
+
+## Tax Reporting
+
+The ledger captures all data needed for tax reporting: cost basis, realized P&L, fees, holding periods, and exit reasons. You can export your trade history to CSV and submit it directly to your tax authority or import it into accounting software.
+
+> **Note:** Tax regulations vary by jurisdiction. The ledger provides the raw transaction data — consult a tax professional for advice on how to apply it.
+
+### Export round-trip positions to CSV
+
+Each row is one complete trade (entry + exit pair), which is typically what tax authorities require:
+
+```bash
+go run ./cmd/ledger trades list live --json | jq -r '
+  ["RESULT","SYMBOL","DIR","SIZE","ENTRY","EXIT","PNL","PNL%","OPENED","CLOSED","EXIT_REASON"],
+  (.[] | [
+    (if .status == "open" then "open" elif .realized_pnl > 0 then "win" else "loss" end),
+    .symbol,
+    .side,
+    .cost_basis,
+    .avg_entry_price,
+    (.exit_price // ""),
+    .realized_pnl,
+    (if .cost_basis > 0 then (.realized_pnl / .cost_basis * 100 | . * 100 | round | . / 100 | tostring) + "%" else "" end),
+    .opened_at,
+    (.closed_at // ""),
+    (.exit_reason // "")
+  ])
+  | @csv
+' > positions.csv
+```
+
+Use `--limit 0` to export the full history (all pages):
+
+```bash
+go run ./cmd/ledger trades list live --limit 0 --json | jq -r '...' > positions_full.csv
+```
+
+### Export raw individual trades to CSV
+
+If your tax authority requires every individual buy/sell transaction:
+
+```bash
+go run ./cmd/ledger trades list live --raw --limit 0 --json | jq -r '
+  ["TRADE_ID","SYMBOL","SIDE","QTY","PRICE","FEE","MARKET","TIMESTAMP"],
+  (.[] | [.trade_id, .symbol, .side, .quantity, .price, .fee, .market_type, .timestamp])
+  | @csv
+' > trades.csv
+```

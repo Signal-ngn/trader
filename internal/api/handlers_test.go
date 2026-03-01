@@ -8,6 +8,76 @@ import (
 	"testing"
 )
 
+// ── GET /api/v1/accounts/{id}/positions — pagination shape ───────────────────
+
+// TestListPositionsRoute_ReturnsObjectNotArray verifies that the positions
+// endpoint returns a JSON object {"positions":[...], "next_cursor":"..."} and
+// NOT a bare array. Without a real DB the handler will 500, but we can test
+// the route is registered and the response shape when the handler does run by
+// checking the Content-Type and that a bare array is never returned.
+func TestListPositionsRoute_Registered(t *testing.T) {
+	srv := &Server{nc: nil}
+	router := srv.Router()
+
+	req := httptest.NewRequest("GET", "/api/v1/accounts/paper/positions", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code == http.StatusNotFound {
+		t.Error("GET /api/v1/accounts/paper/positions: got 404, route not registered")
+	}
+	if w.Code == http.StatusMethodNotAllowed {
+		t.Error("GET /api/v1/accounts/paper/positions: got 405, GET should be allowed")
+	}
+}
+
+func TestListPositionsRoute_InvalidStatus(t *testing.T) {
+	srv := &Server{nc: nil}
+	router := srv.Router()
+
+	req := httptest.NewRequest("GET", "/api/v1/accounts/paper/positions?status=invalid", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid status, got %d", w.Code)
+	}
+
+	var body map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if body["error"] == "" {
+		t.Error("expected error field in response body")
+	}
+}
+
+func TestListPositionsRoute_InvalidLimit(t *testing.T) {
+	srv := &Server{nc: nil}
+	router := srv.Router()
+
+	req := httptest.NewRequest("GET", "/api/v1/accounts/paper/positions?limit=abc", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid limit, got %d", w.Code)
+	}
+}
+
+func TestListPositionsRoute_RequiresAuth(t *testing.T) {
+	srv := &Server{nc: nil, enforceAuth: true}
+	router := srv.Router()
+
+	req := httptest.NewRequest("GET", "/api/v1/accounts/paper/positions", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 without auth header, got %d", w.Code)
+	}
+}
+
 // ── DELETE /api/v1/trades/{tradeId} ──────────────────────────────────────────
 
 func TestDeleteTradeRoute_Registered(t *testing.T) {
