@@ -138,6 +138,13 @@ func InferAccountType(accountID string) AccountType {
 	return AccountTypeLive
 }
 
+// AccountBalance represents the current cash balance for a trading account.
+type AccountBalance struct {
+	AccountID string  `json:"account_id"`
+	Currency  string  `json:"currency"`
+	Amount    float64 `json:"amount"`
+}
+
 // Order represents a trading order.
 type Order struct {
 	OrderID      string      `json:"order_id"`

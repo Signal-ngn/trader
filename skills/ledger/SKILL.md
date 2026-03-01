@@ -42,20 +42,51 @@ The tenant ID is resolved automatically on first use and cached in `~/.config/le
 ## Accounts
 
 ```bash
-ledger accounts list           # list all accounts for this tenant
-ledger accounts list --json    # JSON array
+ledger accounts list                        # list all accounts for this tenant
+ledger accounts list --json                 # JSON array
+ledger accounts show <account-id>           # aggregate stats: trades, win rate, P&L, balance
+ledger accounts show <account-id> --json    # raw JSON
 ```
 
 **Response fields:** `id`, `name`, `type` (`live`/`paper`), `created_at`
 
 Common account IDs: `live` (real trading), `paper` (simulated).
 
+`accounts show` includes a `Balance (USD)` row when a balance has been set, or displays `not set`.
+
+---
+
+## Account Balance
+
+The ledger tracks a cash balance per account. Set an initial balance once, then query it before sizing positions. **Balance is automatically adjusted by trade ingestion** — opening a position deducts the cost and closing a position credits the realised P&L.
+
+```bash
+ledger accounts balance set live 50000                    # set USD balance (overwrites any existing value)
+ledger accounts balance set live 40000 --currency EUR     # set a non-USD balance
+ledger accounts balance get live                          # query current USD balance
+ledger accounts balance get live --currency EUR           # query non-USD balance
+ledger accounts balance get live --json                   # raw JSON
+```
+
+**Automatic balance adjustments during ingestion:**
+
+| Trade event | Balance change |
+|---|---|
+| Spot buy (open / add to position) | − `quantity × price + fee` |
+| Spot sell (partial or full close) | + realised P&L |
+| Futures open | − margin (`margin` field; or `cost_basis / leverage`; skipped if neither available) |
+| Futures close (partial or full) | + realised P&L (leverage- and fee-adjusted) |
+
+Adjustments are a **no-op** when no balance row exists — the row is never auto-created. Position rebuild does not touch the balance.
+
+`PUT /balance` always overwrites — use it to set an initial balance or to correct it after broker reconciliation.
+
 ---
 
 ## Portfolio
 
 ```bash
-ledger portfolio live          # open positions + total realized P&L
+ledger portfolio live          # open positions + total realized P&L + balance (when set)
 ledger portfolio paper
 ledger portfolio live --json
 ```
@@ -63,6 +94,7 @@ ledger portfolio live --json
 **Response fields:**
 - `positions[]` — open positions (see Positions below)
 - `total_realized_pnl` — sum of realized P&L across all positions (open + closed)
+- `balance` — current USD balance (omitted when no balance has been set)
 
 Use this before placing a new trade to check current exposure.
 
@@ -297,6 +329,17 @@ ledger --json <any-command>                               # JSON output
 ---
 
 ## Trading Bot Patterns
+
+### Check available balance before sizing a position
+
+```bash
+# Get current USD balance
+BALANCE=$(ledger accounts balance get live --json | jq '.amount')
+echo "Available balance: $BALANCE"
+
+# Set initial balance (e.g. after funding the account)
+ledger accounts balance set live 50000
+```
 
 ### Check exposure before entering a trade
 

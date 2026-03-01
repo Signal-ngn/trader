@@ -76,6 +76,8 @@ func (s *Server) Router() http.Handler {
 		r.Get("/accounts/{accountId}/positions", s.handleListPositions)
 		r.Get("/accounts/{accountId}/trades", s.handleListTrades)
 		r.Get("/accounts/{accountId}/orders", s.handleListOrders)
+		r.Put("/accounts/{accountId}/balance", s.handleSetBalance)
+		r.Get("/accounts/{accountId}/balance", s.handleGetBalance)
 	})
 
 	return r

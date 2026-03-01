@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Spot-Canvas/ledger/internal/api/middleware"
+	"github.com/Spot-Canvas/ledger/internal/domain"
 	"github.com/Spot-Canvas/ledger/internal/store"
 )
 
@@ -214,6 +216,59 @@ func (s *Server) handleListOrders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleSetBalance(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+	accountID := chi.URLParam(r, "accountId")
+
+	var body struct {
+		Amount   *float64 `json:"amount"`
+		Currency string   `json:"currency"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Amount == nil {
+		writeError(w, http.StatusBadRequest, "amount is required")
+		return
+	}
+	currency := body.Currency
+	if currency == "" {
+		currency = "USD"
+	}
+
+	if err := s.repo.SetAccountBalance(r.Context(), tenantID, accountID, currency, *body.Amount); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to set balance")
+		return
+	}
+	writeJSON(w, http.StatusOK, domain.AccountBalance{
+		AccountID: accountID,
+		Currency:  currency,
+		Amount:    *body.Amount,
+	})
+}
+
+func (s *Server) handleGetBalance(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+	accountID := chi.URLParam(r, "accountId")
+
+	currency := r.URL.Query().Get("currency")
+	if currency == "" {
+		currency = "USD"
+	}
+
+	amount, err := s.repo.GetAccountBalance(r.Context(), tenantID, accountID, currency)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get balance")
+		return
+	}
+	if amount == nil {
+		writeError(w, http.StatusNotFound, "no balance set for account")
+		return
+	}
+	writeJSON(w, http.StatusOK, domain.AccountBalance{
+		AccountID: accountID,
+		Currency:  currency,
+		Amount:    *amount,
+	})
 }
 
 func (s *Server) handleDeleteTrade(w http.ResponseWriter, r *http.Request) {

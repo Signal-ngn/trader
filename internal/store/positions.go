@@ -24,13 +24,23 @@ type PositionListResult struct {
 	NextCursor string            `json:"next_cursor,omitempty"`
 }
 
-// UpsertPosition creates or updates a position based on the trade.
-// Must be called within a transaction.
+// UpsertPosition creates or updates a position based on the trade, and adjusts
+// the account balance when a balance row exists. Must be called within a transaction.
 func (r *Repository) UpsertPosition(ctx context.Context, tx pgx.Tx, trade *domain.Trade) error {
 	if trade.MarketType == domain.MarketTypeSpot {
 		return r.upsertSpotPosition(ctx, tx, trade)
 	}
 	return r.upsertFuturesPosition(ctx, tx, trade)
+}
+
+// upsertPositionForRebuild creates or updates a position based on the trade
+// WITHOUT adjusting the account balance. Used exclusively by RebuildPositions
+// so that position reconstruction does not disturb the current balance.
+func (r *Repository) upsertPositionForRebuild(ctx context.Context, tx pgx.Tx, trade *domain.Trade) error {
+	if trade.MarketType == domain.MarketTypeSpot {
+		return r.upsertSpotPositionNoBalance(ctx, tx, trade)
+	}
+	return r.upsertFuturesPositionNoBalance(ctx, tx, trade)
 }
 
 func (r *Repository) upsertSpotPosition(ctx context.Context, tx pgx.Tx, trade *domain.Trade) error {
@@ -61,7 +71,11 @@ func (r *Repository) upsertSpotPosition(ctx context.Context, tx pgx.Tx, trade *d
 			`, trade.TenantID, posID, trade.AccountID, trade.Symbol,
 				trade.Quantity, trade.Price, costBasis, trade.Timestamp,
 				trade.StopLoss, trade.TakeProfit, trade.Confidence)
-			return err
+			if err != nil {
+				return err
+			}
+			// Deduct cost from balance (no-op if no balance row exists)
+			return r.AdjustBalance(ctx, tx, trade.TenantID, trade.AccountID, "USD", -costBasis)
 		}
 		// Sell without a position — skip (no position to close)
 		return nil
@@ -87,7 +101,11 @@ func (r *Repository) upsertSpotPosition(ctx context.Context, tx pgx.Tx, trade *d
 				take_profit = COALESCE($6, take_profit)
 			WHERE id = $4
 		`, totalQuantity, avgEntry, totalCost, pos.ID, trade.StopLoss, trade.TakeProfit)
-		return err
+		if err != nil {
+			return err
+		}
+		// Deduct additional cost from balance (no-op if no balance row exists)
+		return r.AdjustBalance(ctx, tx, trade.TenantID, trade.AccountID, "USD", -newCostBasis)
 	}
 
 	// Sell — reduce position
@@ -103,7 +121,11 @@ func (r *Repository) upsertSpotPosition(ctx context.Context, tx pgx.Tx, trade *d
 				exit_price = $4, exit_reason = $5
 			WHERE id = $3
 		`, realizedPnL, trade.Timestamp, pos.ID, exitPrice, trade.ExitReason)
-		return err
+		if err != nil {
+			return err
+		}
+		// Credit realised P&L to balance (no-op if no balance row exists)
+		return r.AdjustBalance(ctx, tx, trade.TenantID, trade.AccountID, "USD", realizedPnL)
 	}
 
 	// Partial close — reduce quantity, keep proportional cost basis
@@ -113,7 +135,11 @@ func (r *Repository) upsertSpotPosition(ctx context.Context, tx pgx.Tx, trade *d
 		SET quantity = $1, cost_basis = $2, realized_pnl = realized_pnl + $3
 		WHERE id = $4
 	`, newQuantity, remainingCostBasis, realizedPnL, pos.ID)
-	return err
+	if err != nil {
+		return err
+	}
+	// Credit realised P&L to balance (no-op if no balance row exists)
+	return r.AdjustBalance(ctx, tx, trade.TenantID, trade.AccountID, "USD", realizedPnL)
 }
 
 func (r *Repository) upsertFuturesPosition(ctx context.Context, tx pgx.Tx, trade *domain.Trade) error {
@@ -152,7 +178,20 @@ func (r *Repository) upsertFuturesPosition(ctx context.Context, tx pgx.Tx, trade
 			trade.Quantity, trade.Price, costBasis,
 			trade.Leverage, trade.Margin, trade.LiquidationPrice, trade.Timestamp,
 			trade.StopLoss, trade.TakeProfit, trade.Confidence)
-		return err
+		if err != nil {
+			return err
+		}
+		// Deduct margin from balance.
+		// Priority: trade.Margin → costBasis/leverage → skip if neither available.
+		var marginDelta float64
+		if trade.Margin != nil {
+			marginDelta = *trade.Margin
+		} else if trade.Leverage != nil && *trade.Leverage > 0 {
+			marginDelta = costBasis / float64(*trade.Leverage)
+		} else {
+			return nil // cannot determine margin — skip balance adjustment
+		}
+		return r.AdjustBalance(ctx, tx, trade.TenantID, trade.AccountID, "USD", -marginDelta)
 	}
 	if err != nil {
 		return fmt.Errorf("query futures position: %w", err)
@@ -184,7 +223,25 @@ func (r *Repository) upsertFuturesPosition(ctx context.Context, tx pgx.Tx, trade
 		`, totalQuantity, avgEntry, totalCost,
 			trade.Leverage, trade.Margin, trade.LiquidationPrice, pos.ID,
 			trade.StopLoss, trade.TakeProfit)
-		return err
+		if err != nil {
+			return err
+		}
+		// Deduct additional margin for the added quantity (no-op if no balance row)
+		var marginDelta float64
+		if trade.Margin != nil {
+			marginDelta = *trade.Margin
+		} else {
+			lev := pos.Leverage
+			if lev == nil {
+				lev = trade.Leverage
+			}
+			if lev != nil && *lev > 0 {
+				marginDelta = newCost / float64(*lev)
+			} else {
+				return nil
+			}
+		}
+		return r.AdjustBalance(ctx, tx, trade.TenantID, trade.AccountID, "USD", -marginDelta)
 	}
 
 	// Closing (partially or fully)
@@ -226,10 +283,190 @@ func (r *Repository) upsertFuturesPosition(ctx context.Context, tx pgx.Tx, trade
 				exit_price = $4, exit_reason = $5
 			WHERE id = $3
 		`, realizedPnL, trade.Timestamp, pos.ID, exitPrice, trade.ExitReason)
-		return err
+		if err != nil {
+			return err
+		}
+		// Credit realised P&L to balance (no-op if no balance row exists)
+		return r.AdjustBalance(ctx, tx, trade.TenantID, trade.AccountID, "USD", realizedPnL)
 	}
 
 	// Partially closed
+	remainingCost := pos.AvgEntryPrice * newQuantity
+	_, err = tx.Exec(ctx, `
+		UPDATE ledger_positions
+		SET quantity = $1, cost_basis = $2, realized_pnl = realized_pnl + $3
+		WHERE id = $4
+	`, newQuantity, remainingCost, realizedPnL, pos.ID)
+	if err != nil {
+		return err
+	}
+	// Credit realised P&L to balance (no-op if no balance row exists)
+	return r.AdjustBalance(ctx, tx, trade.TenantID, trade.AccountID, "USD", realizedPnL)
+}
+
+// upsertSpotPositionNoBalance is identical to upsertSpotPosition but skips balance adjustment.
+// Used by position rebuild so that replaying trades does not alter the current balance.
+func (r *Repository) upsertSpotPositionNoBalance(ctx context.Context, tx pgx.Tx, trade *domain.Trade) error {
+	var pos domain.Position
+	var side, status string
+	err := tx.QueryRow(ctx, `
+		SELECT id, account_id, symbol, market_type, side, quantity, avg_entry_price,
+			cost_basis, realized_pnl, status, opened_at
+		FROM ledger_positions
+		WHERE tenant_id = $1 AND account_id = $2 AND symbol = $3 AND market_type = 'spot' AND status = 'open'
+	`, trade.TenantID, trade.AccountID, trade.Symbol).Scan(
+		&pos.ID, &pos.AccountID, &pos.Symbol, &pos.MarketType, &side,
+		&pos.Quantity, &pos.AvgEntryPrice, &pos.CostBasis, &pos.RealizedPnL,
+		&status, &pos.OpenedAt,
+	)
+	if err == pgx.ErrNoRows {
+		if trade.Side == domain.SideBuy {
+			costBasis := trade.Quantity*trade.Price + trade.Fee
+			posID := fmt.Sprintf("%s-%s-spot-%d", trade.AccountID, trade.Symbol, trade.Timestamp.Unix())
+			_, err := tx.Exec(ctx, `
+				INSERT INTO ledger_positions (tenant_id, id, account_id, symbol, market_type, side,
+					quantity, avg_entry_price, cost_basis, realized_pnl, status, opened_at,
+					stop_loss, take_profit, confidence)
+				VALUES ($1, $2, $3, $4, 'spot', 'long', $5, $6, $7, 0, 'open', $8, $9, $10, $11)
+			`, trade.TenantID, posID, trade.AccountID, trade.Symbol,
+				trade.Quantity, trade.Price, costBasis, trade.Timestamp,
+				trade.StopLoss, trade.TakeProfit, trade.Confidence)
+			return err
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("query position: %w", err)
+	}
+	pos.Side = domain.PositionSide(side)
+	pos.Status = domain.PositionStatus(status)
+	if trade.Side == domain.SideBuy {
+		newCostBasis := trade.Quantity*trade.Price + trade.Fee
+		totalQuantity := pos.Quantity + trade.Quantity
+		totalCost := pos.CostBasis + newCostBasis
+		avgEntry := totalCost / totalQuantity
+		_, err = tx.Exec(ctx, `
+			UPDATE ledger_positions
+			SET quantity = $1, avg_entry_price = $2, cost_basis = $3,
+				stop_loss = COALESCE($5, stop_loss),
+				take_profit = COALESCE($6, take_profit)
+			WHERE id = $4
+		`, totalQuantity, avgEntry, totalCost, pos.ID, trade.StopLoss, trade.TakeProfit)
+		return err
+	}
+	realizedPnL := (trade.Price-pos.AvgEntryPrice)*trade.Quantity - trade.Fee
+	newQuantity := pos.Quantity - trade.Quantity
+	if newQuantity <= 0 {
+		exitPrice := trade.Price
+		_, err = tx.Exec(ctx, `
+			UPDATE ledger_positions
+			SET quantity = 0, realized_pnl = realized_pnl + $1, status = 'closed', closed_at = $2,
+				exit_price = $4, exit_reason = $5
+			WHERE id = $3
+		`, realizedPnL, trade.Timestamp, pos.ID, exitPrice, trade.ExitReason)
+		return err
+	}
+	remainingCostBasis := pos.AvgEntryPrice * newQuantity
+	_, err = tx.Exec(ctx, `
+		UPDATE ledger_positions
+		SET quantity = $1, cost_basis = $2, realized_pnl = realized_pnl + $3
+		WHERE id = $4
+	`, newQuantity, remainingCostBasis, realizedPnL, pos.ID)
+	return err
+}
+
+// upsertFuturesPositionNoBalance is identical to upsertFuturesPosition but skips balance adjustment.
+func (r *Repository) upsertFuturesPositionNoBalance(ctx context.Context, tx pgx.Tx, trade *domain.Trade) error {
+	var pos domain.Position
+	var side, status string
+	err := tx.QueryRow(ctx, `
+		SELECT id, account_id, symbol, market_type, side, quantity, avg_entry_price,
+			cost_basis, realized_pnl, leverage, margin, liquidation_price, status, opened_at
+		FROM ledger_positions
+		WHERE tenant_id = $1 AND account_id = $2 AND symbol = $3 AND market_type = 'futures' AND status = 'open'
+	`, trade.TenantID, trade.AccountID, trade.Symbol).Scan(
+		&pos.ID, &pos.AccountID, &pos.Symbol, &pos.MarketType, &side,
+		&pos.Quantity, &pos.AvgEntryPrice, &pos.CostBasis, &pos.RealizedPnL,
+		&pos.Leverage, &pos.Margin, &pos.LiquidationPrice, &status, &pos.OpenedAt,
+	)
+	if err == pgx.ErrNoRows {
+		var posSide domain.PositionSide
+		if trade.Side == domain.SideBuy {
+			posSide = domain.PositionSideLong
+		} else {
+			posSide = domain.PositionSideShort
+		}
+		costBasis := trade.Quantity * trade.Price
+		posID := fmt.Sprintf("%s-%s-futures-%d", trade.AccountID, trade.Symbol, trade.Timestamp.Unix())
+		_, err := tx.Exec(ctx, `
+			INSERT INTO ledger_positions (tenant_id, id, account_id, symbol, market_type, side,
+				quantity, avg_entry_price, cost_basis, realized_pnl,
+				leverage, margin, liquidation_price, status, opened_at,
+				stop_loss, take_profit, confidence)
+			VALUES ($1, $2, $3, $4, 'futures', $5, $6, $7, $8, 0, $9, $10, $11, 'open', $12, $13, $14, $15)
+		`, trade.TenantID, posID, trade.AccountID, trade.Symbol, string(posSide),
+			trade.Quantity, trade.Price, costBasis,
+			trade.Leverage, trade.Margin, trade.LiquidationPrice, trade.Timestamp,
+			trade.StopLoss, trade.TakeProfit, trade.Confidence)
+		return err
+	}
+	if err != nil {
+		return fmt.Errorf("query futures position: %w", err)
+	}
+	pos.Side = domain.PositionSide(side)
+	pos.Status = domain.PositionStatus(status)
+	isClosing := (pos.Side == domain.PositionSideLong && trade.Side == domain.SideSell) ||
+		(pos.Side == domain.PositionSideShort && trade.Side == domain.SideBuy)
+	if !isClosing {
+		newCost := trade.Quantity * trade.Price
+		totalQuantity := pos.Quantity + trade.Quantity
+		totalCost := pos.CostBasis + newCost
+		avgEntry := totalCost / totalQuantity
+		_, err = tx.Exec(ctx, `
+			UPDATE ledger_positions
+			SET quantity = $1, avg_entry_price = $2, cost_basis = $3,
+				leverage = COALESCE($4, leverage),
+				margin = COALESCE($5, margin),
+				liquidation_price = COALESCE($6, liquidation_price),
+				stop_loss = COALESCE($8, stop_loss),
+				take_profit = COALESCE($9, take_profit)
+			WHERE id = $7
+		`, totalQuantity, avgEntry, totalCost,
+			trade.Leverage, trade.Margin, trade.LiquidationPrice, pos.ID,
+			trade.StopLoss, trade.TakeProfit)
+		return err
+	}
+	const defaultLeverage = 2
+	levVal := defaultLeverage
+	lev := pos.Leverage
+	if lev == nil {
+		lev = trade.Leverage
+	}
+	if lev != nil && *lev > 0 {
+		levVal = *lev
+	}
+	scale := 1.0 / float64(levVal)
+	var realizedPnL float64
+	if pos.Side == domain.PositionSideLong {
+		realizedPnL = (trade.Price - pos.AvgEntryPrice) * trade.Quantity * scale
+	} else {
+		realizedPnL = (pos.AvgEntryPrice - trade.Price) * trade.Quantity * scale
+	}
+	realizedPnL -= trade.Fee
+	if trade.FundingFee != nil {
+		realizedPnL -= *trade.FundingFee
+	}
+	newQuantity := pos.Quantity - trade.Quantity
+	if newQuantity <= 0 {
+		exitPrice := trade.Price
+		_, err = tx.Exec(ctx, `
+			UPDATE ledger_positions
+			SET quantity = 0, realized_pnl = realized_pnl + $1, status = 'closed', closed_at = $2,
+				exit_price = $4, exit_reason = $5
+			WHERE id = $3
+		`, realizedPnL, trade.Timestamp, pos.ID, exitPrice, trade.ExitReason)
+		return err
+	}
 	remainingCost := pos.AvgEntryPrice * newQuantity
 	_, err = tx.Exec(ctx, `
 		UPDATE ledger_positions
@@ -366,9 +603,10 @@ func (r *Repository) ListPositions(ctx context.Context, tenantID uuid.UUID, acco
 type PortfolioSummary struct {
 	Positions        []domain.Position `json:"positions"`
 	TotalRealizedPnL float64           `json:"total_realized_pnl"`
+	Balance          *float64          `json:"balance,omitempty"`
 }
 
-// GetPortfolioSummary returns open positions and aggregate realized P&L for a tenant/account.
+// GetPortfolioSummary returns open positions, aggregate realized P&L, and current balance for a tenant/account.
 func (r *Repository) GetPortfolioSummary(ctx context.Context, tenantID uuid.UUID, accountID string) (*PortfolioSummary, error) {
 	result, err := r.ListPositions(ctx, tenantID, accountID, PositionFilter{Status: "open", Limit: 200})
 	if err != nil {
@@ -386,9 +624,16 @@ func (r *Repository) GetPortfolioSummary(ctx context.Context, tenantID uuid.UUID
 		return nil, fmt.Errorf("get total pnl: %w", err)
 	}
 
+	// Attach balance when set (omitted from response when nil)
+	balance, err := r.GetAccountBalance(ctx, tenantID, accountID, "USD")
+	if err != nil {
+		return nil, fmt.Errorf("get balance: %w", err)
+	}
+
 	return &PortfolioSummary{
 		Positions:        positions,
 		TotalRealizedPnL: totalPnL,
+		Balance:          balance,
 	}, nil
 }
 
@@ -448,7 +693,7 @@ func (r *Repository) RebuildPositions(ctx context.Context, tenantID uuid.UUID, a
 	}
 
 	for i := range trades {
-		if err := r.UpsertPosition(ctx, tx, &trades[i]); err != nil {
+		if err := r.upsertPositionForRebuild(ctx, tx, &trades[i]); err != nil {
 			return fmt.Errorf("upsert position during rebuild: %w", err)
 		}
 	}

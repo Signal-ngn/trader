@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -12,13 +13,14 @@ import (
 
 // AccountStats holds all-time aggregate statistics for an account.
 type AccountStats struct {
-	TotalTrades      int     `json:"total_trades"`
-	ClosedTrades     int     `json:"closed_trades"`
-	WinCount         int     `json:"win_count"`
-	LossCount        int     `json:"loss_count"`
-	WinRate          float64 `json:"win_rate"`
-	TotalRealizedPnL float64 `json:"total_realized_pnl"`
-	OpenPositions    int     `json:"open_positions"`
+	TotalTrades      int      `json:"total_trades"`
+	ClosedTrades     int      `json:"closed_trades"`
+	WinCount         int      `json:"win_count"`
+	LossCount        int      `json:"loss_count"`
+	WinRate          float64  `json:"win_rate"`
+	TotalRealizedPnL float64  `json:"total_realized_pnl"`
+	OpenPositions    int      `json:"open_positions"`
+	Balance          *float64 `json:"balance,omitempty"`
 }
 
 // GetAccountStats returns aggregate statistics for the given (tenantID, accountID).
@@ -64,6 +66,13 @@ func (r *Repository) GetAccountStats(ctx context.Context, tenantID uuid.UUID, ac
 	if stats.ClosedTrades > 0 {
 		stats.WinRate = float64(stats.WinCount) / float64(stats.ClosedTrades)
 	}
+
+	// Attach balance when set (omitted from response when nil)
+	balance, err := r.GetAccountBalance(ctx, tenantID, accountID, "USD")
+	if err != nil {
+		return nil, fmt.Errorf("get balance: %w", err)
+	}
+	stats.Balance = balance
 
 	return &stats, nil
 }
@@ -137,4 +146,50 @@ func (r *Repository) ListAccounts(ctx context.Context, tenantID uuid.UUID) ([]do
 		accounts = []domain.Account{}
 	}
 	return accounts, nil
+}
+
+// SetAccountBalance upserts the cash balance for a (tenant, account, currency) key.
+// Overwrites any existing value unconditionally.
+func (r *Repository) SetAccountBalance(ctx context.Context, tenantID uuid.UUID, accountID, currency string, amount float64) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO ledger_account_balances (tenant_id, account_id, currency, amount, updated_at)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (tenant_id, account_id, currency)
+		DO UPDATE SET amount = EXCLUDED.amount, updated_at = EXCLUDED.updated_at
+	`, tenantID, accountID, currency, amount, time.Now())
+	if err != nil {
+		return fmt.Errorf("set account balance: %w", err)
+	}
+	return nil
+}
+
+// GetAccountBalance returns the current balance for a (tenant, account, currency) key,
+// or nil when no balance row exists.
+func (r *Repository) GetAccountBalance(ctx context.Context, tenantID uuid.UUID, accountID, currency string) (*float64, error) {
+	var amount float64
+	err := r.pool.QueryRow(ctx,
+		"SELECT amount FROM ledger_account_balances WHERE tenant_id = $1 AND account_id = $2 AND currency = $3",
+		tenantID, accountID, currency,
+	).Scan(&amount)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get account balance: %w", err)
+	}
+	return &amount, nil
+}
+
+// AdjustBalance atomically applies a signed delta to the balance for a (tenant, account, currency) key.
+// Must be called within an existing transaction. Is a no-op when no balance row exists.
+func (r *Repository) AdjustBalance(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, accountID, currency string, delta float64) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE ledger_account_balances
+		SET amount = amount + $1, updated_at = NOW()
+		WHERE tenant_id = $2 AND account_id = $3 AND currency = $4
+	`, delta, tenantID, accountID, currency)
+	if err != nil {
+		return fmt.Errorf("adjust balance: %w", err)
+	}
+	return nil
 }
