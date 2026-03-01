@@ -193,6 +193,85 @@ curl -s -X POST "${LEDGER_URL:-https://spot-canvas-ledger-staging-uumkospiua-ey.
   }'
 ```
 
+## Account Balance
+
+The ledger tracks a cash balance per account. The trading agent should set an initial balance before trading and query it before sizing positions. **Balance is automatically adjusted by trade ingestion** — opening a position deducts the cost and closing a position credits the realised P&L.
+
+### Set (or reset) account balance
+
+Use `PUT /api/v1/accounts/{accountId}/balance` to set an initial balance or to manually correct it after broker reconciliation. This **overwrites** the current value unconditionally.
+
+```bash
+curl -s -X PUT "${LEDGER_URL:-https://spot-canvas-ledger-staging-uumkospiua-ey.a.run.app}/api/v1/accounts/live/balance" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${LEDGER_API_KEY}" \
+  -d '{"amount": 50000, "currency": "USD"}'
+```
+
+Response:
+```json
+{ "account_id": "live", "currency": "USD", "amount": 50000 }
+```
+
+`currency` defaults to `"USD"` if omitted.
+
+CLI equivalent:
+
+```bash
+ledger accounts balance set live 50000               # set USD balance
+ledger accounts balance set live 40000 --currency EUR  # set EUR balance
+ledger accounts balance set live 50000 --json        # raw JSON response
+```
+
+### Query account balance
+
+```bash
+curl -s "${LEDGER_URL:-https://spot-canvas-ledger-staging-uumkospiua-ey.a.run.app}/api/v1/accounts/live/balance" \
+  -H "Authorization: Bearer ${LEDGER_API_KEY}"
+```
+
+Response when set:
+```json
+{ "account_id": "live", "currency": "USD", "amount": 47250.00 }
+```
+
+Returns HTTP 404 when no balance has been set for the account.
+
+Optional `?currency=EUR` query parameter selects a non-default currency.
+
+CLI equivalent:
+
+```bash
+ledger accounts balance get live               # show balance table
+ledger accounts balance get live --currency EUR  # EUR balance
+ledger accounts balance get live --json        # raw JSON
+```
+
+### How automatic balance adjustment works
+
+When a trade is ingested the ledger adjusts the USD balance **within the same transaction** as the position update. The adjustment is a **no-op** if no balance row exists for the account — no balance row is ever auto-created.
+
+| Event | Balance change |
+|---|---|
+| Spot buy (open / add to position) | − `quantity × price + fee` |
+| Spot sell (partial or full close) | + realised P&L |
+| Futures open | − margin (uses `margin` field; falls back to `cost_basis / leverage`; skipped if neither available) |
+| Futures close (partial or full) | + realised P&L (leverage- and fee-adjusted) |
+
+Position **rebuild** does not touch the balance — it only reconstructs position state.
+
+### Balance in portfolio and stats responses
+
+When a balance has been set, it is included in the portfolio summary and account stats responses as an optional `"balance"` field. It is omitted entirely when no balance row exists.
+
+```bash
+curl -s "${LEDGER_URL:-...}/api/v1/accounts/live/portfolio" | python3 -m json.tool
+# → { "positions": [...], "total_realized_pnl": 1234.5, "balance": 47250.00 }
+
+curl -s "${LEDGER_URL:-...}/api/v1/accounts/live/stats" | python3 -m json.tool
+# → { ..., "total_realized_pnl": 1234.5, "balance": 47250.00 }
+```
+
 ## Querying the Ledger
 
 After recording trades, you can query positions and trade history.
@@ -214,16 +293,17 @@ Response:
   "loss_count": 30,
   "win_rate": 0.7248,
   "total_realized_pnl": 2555.28,
-  "open_positions": 7
+  "open_positions": 7,
+  "balance": 47250.00
 }
 ```
 
-`total_trades` = closed + open positions (round-trips, not raw buy/sell records).
+`total_trades` = closed + open positions (round-trips, not raw buy/sell records). `balance` is omitted when no balance has been set.
 
 CLI equivalent:
 
 ```bash
-ledger accounts show live            # human-readable table
+ledger accounts show live            # human-readable table (includes balance row when set)
 ledger accounts show live --json     # raw JSON
 ```
 
@@ -262,9 +342,14 @@ curl -s "${LEDGER_URL:-https://spot-canvas-ledger-staging-uumkospiua-ey.a.run.ap
 The `ledger` CLI wraps the REST API for human use. Key commands:
 
 ```bash
-ledger accounts list                        # list all accounts for the tenant
-ledger accounts show <account-id>           # show aggregate stats (win rate, P&L, trade count)
-ledger accounts show <account-id> --json    # raw JSON stats
+ledger accounts list                                    # list all accounts for the tenant
+ledger accounts show <account-id>                       # show aggregate stats (win rate, P&L, trade count, balance)
+ledger accounts show <account-id> --json                # raw JSON stats
+
+ledger accounts balance set <account-id> <amount>       # set/overwrite account balance (USD)
+ledger accounts balance set <account-id> <amount> --currency EUR  # set non-USD balance
+ledger accounts balance get <account-id>                # query current balance
+ledger accounts balance get <account-id> --currency EUR # query non-USD balance
 
 ledger trades list <account-id>             # round-trip view: one row per position (default)
 ledger trades list <account-id> --raw       # raw trade view: one row per individual trade leg

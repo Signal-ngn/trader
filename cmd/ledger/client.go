@@ -157,6 +157,25 @@ func (c *Client) PostRaw(rawURL string, body []byte) (int, []byte, error) {
 	return c.doRaw(http.MethodPost, rawURL, body)
 }
 
+// PutRaw performs a PUT with a body reader and returns raw bytes.
+func (c *Client) PutRaw(rawURL string, body io.Reader) (int, []byte, error) {
+	req, err := http.NewRequest(http.MethodPut, rawURL, body)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, b, nil
+}
+
 // Delete performs a DELETE request and unmarshals the response.
 func (c *Client) Delete(rawURL string, out any) error {
 	return c.do(http.MethodDelete, rawURL, nil, out)
