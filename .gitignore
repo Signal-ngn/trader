@@ -13,6 +13,7 @@ cloud-sql-proxy
 # Test & build artifacts
 coverage.out
 tmp/
+dist/
 
 # IDE
 .idea/
