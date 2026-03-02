@@ -9,7 +9,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
-	"github.com/Signal-ngn/trader/internal/api/middleware"
 	"github.com/Signal-ngn/trader/internal/domain"
 	"github.com/Signal-ngn/trader/internal/store"
 )
@@ -597,7 +596,7 @@ func (e *Engine) isDailyLossLimitReached(ctx context.Context, accountID string) 
 	return false
 }
 
-// tenantID returns the default tenant UUID used by the engine.
+// tenantID returns the tenant UUID resolved at startup.
 func (e *Engine) tenantID() uuid.UUID {
-	return uuid.MustParse(middleware.DefaultTenantID.String())
+	return e.tenantUUID
 }

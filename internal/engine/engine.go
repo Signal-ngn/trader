@@ -9,10 +9,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	nats "github.com/nats-io/nats.go"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	"github.com/Signal-ngn/trader/internal/api/middleware"
 	"github.com/Signal-ngn/trader/internal/config"
 	"github.com/Signal-ngn/trader/internal/ingest"
 	"github.com/Signal-ngn/trader/internal/store"
@@ -51,6 +53,10 @@ type Engine struct {
 	cfg      *config.Config
 	repo     *store.Repository
 	exchange Exchange
+
+	// tenantUUID is resolved once at Start from the SN API key.
+	// Falls back to the middleware default tenant if the key is not found.
+	tenantUUID uuid.UUID
 
 	// accounts is the resolved list of account IDs this engine instance trades.
 	// Populated at Start time (from cfg.TraderAccounts or all tenant accounts).
@@ -115,12 +121,32 @@ func New(cfg *config.Config, repo *store.Repository, publisher ingest.TradePubli
 // Start initialises the engine and runs the signal and risk loops.
 // It blocks until ctx is cancelled.
 func (e *Engine) Start(ctx context.Context) error {
+	// Resolve tenant from the SN API key (same key used to authenticate to the
+	// trader service). Falls back to the middleware default tenant.
+	if e.cfg.SNAPIKey != "" {
+		apiKey, err := uuid.Parse(e.cfg.SNAPIKey)
+		if err == nil {
+			userRepo := store.NewUserRepository(e.repo.Pool())
+			user, err := userRepo.GetByAPIKey(ctx, apiKey)
+			if err != nil {
+				e.logger.Warn().Err(err).Msg("could not resolve tenant from SN_API_KEY, using default")
+			} else if user != nil {
+				e.tenantUUID = user.TenantID
+				e.logger.Info().Str("tenant_id", e.tenantUUID.String()).Msg("resolved tenant from SN_API_KEY")
+			}
+		}
+	}
+	if e.tenantUUID == uuid.Nil {
+		e.tenantUUID = middleware.DefaultTenantID
+		e.logger.Warn().Str("tenant_id", e.tenantUUID.String()).Msg("using default tenant — set SN_API_KEY to resolve the real tenant")
+	}
+
 	// Resolve the account list: use cfg.TraderAccounts if set, otherwise load
 	// all accounts for the tenant from the DB.
 	if len(e.cfg.TraderAccounts) > 0 {
 		e.accounts = e.cfg.TraderAccounts
 	} else {
-		accts, err := e.repo.ListAccounts(ctx, e.tenantID())
+		accts, err := e.repo.ListAccounts(ctx, e.tenantUUID)
 		if err != nil {
 			e.logger.Error().Err(err).Msg("failed to list tenant accounts — engine aborted")
 			return nil
