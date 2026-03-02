@@ -14,18 +14,18 @@ cask "trader" do
   on_macos do
     on_intel do
       url "https://github.com/Signal-ngn/trader/releases/download/v#{version}/trader_darwin_amd64.tar.gz"
-      sha256 "2fe66b95bee9003e287b88d59ab1292f075116883ce047424dab4fb691d5dab5"
+      sha256 "a908bd684136a431a219689c517b5620eab25744e6f7df53f577b477b6f82b04"
     end
     on_arm do
       url "https://github.com/Signal-ngn/trader/releases/download/v#{version}/trader_darwin_arm64.tar.gz"
-      sha256 "d99be1d4115f3abf19fc0257150a8ccb2a6c08dc514f1d0d92dd4c8e7ab7efc6"
+      sha256 "4405f22ce31beb3f20c86219171bfa316e1fc820320664052e27481f748a5519"
     end
   end
 
   on_linux do
     on_intel do
       url "https://github.com/Signal-ngn/trader/releases/download/v#{version}/trader_linux_amd64.tar.gz"
-      sha256 "9259a7f4707b9243d4a045d7df668e7f6c34f9b1b3b3a72b77c44ca3cc78a24b"
+      sha256 "c3c909ab5ea57968c65e8e11dc08b4edf8c613ce18e6612a4f2e1871d266f727"
     end
   end
 
