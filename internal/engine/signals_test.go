@@ -125,19 +125,19 @@ func TestBuildSubject_FullySpecified(t *testing.T) {
 // exercise the timestamp staleness boundary directly.
 
 func TestSignalStale_FreshAccepted(t *testing.T) {
-	// A signal timestamped 30 seconds ago should be fresh.
-	ts := time.Now().Add(-30 * time.Second).Unix()
+	// A signal timestamped 9 minutes ago should be accepted (within 10-minute window).
+	ts := time.Now().Add(-9 * time.Minute).Unix()
 	age := time.Since(time.Unix(ts, 0))
-	if age > 2*time.Minute {
+	if age > 10*time.Minute {
 		t.Fatalf("expected fresh signal, age was %v", age)
 	}
 }
 
 func TestSignalStale_OldRejected(t *testing.T) {
-	// A signal timestamped 3 minutes ago should be stale.
-	ts := time.Now().Add(-3 * time.Minute).Unix()
+	// A signal timestamped 11 minutes ago should be stale.
+	ts := time.Now().Add(-11 * time.Minute).Unix()
 	age := time.Since(time.Unix(ts, 0))
-	if age <= 2*time.Minute {
+	if age <= 10*time.Minute {
 		t.Fatalf("expected stale signal, age was only %v", age)
 	}
 }

@@ -377,10 +377,16 @@ func (e *Engine) handleSignal(ctx context.Context, msg *nats.Msg) {
 		return // silent drop
 	}
 
-	// 3. Stale signal check (>2 minutes old).
+	// 3. Stale signal check.
+	// Signals carry the candle-close time as their timestamp. The shortest
+	// configured granularity is FIVE_MINUTES, so a freshly-emitted signal is
+	// already up to ~90 s old by the time the engine receives it (compute +
+	// publish latency). Allow one full candle period (5 min) plus a 5-minute
+	// processing buffer = 10 minutes total. Anything older is a replay or a
+	// stale batch from a strategy that was offline.
 	if signal.Timestamp > 0 {
 		age := time.Since(time.Unix(signal.Timestamp, 0))
-		if age > 2*time.Minute {
+		if age > 10*time.Minute {
 			logger.Warn().Dur("age", age).Msg("signal too old, dropping")
 			return
 		}
