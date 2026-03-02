@@ -1,8 +1,5 @@
 # Cloud Build configuration for production deployment to signalngn-prod
 # Usage: gcloud builds submit --project=signalngn-prod --config=cloudbuild-prod.yaml --substitutions=_TAG=$(git rev-parse --short HEAD)
-#
-# Deploys with ENFORCE_AUTH=false initially.
-# Switch to ENFORCE_AUTH=true via: gcloud run services update signalngn-trader ...
 
 substitutions:
   _REGION: europe-west1
@@ -15,7 +12,6 @@ substitutions:
   _MIN_INSTANCES: "0"
   _MAX_INSTANCES: "3"
   _CONCURRENCY: "80"
-  _ENFORCE_AUTH: "false"
   _TAG: "latest"
 
 options:
@@ -65,7 +61,7 @@ steps:
       - --port=8080
       - --allow-unauthenticated
       - --add-cloudsql-instances=${_CLOUDSQL_INSTANCE}
-      - --set-env-vars=ENVIRONMENT=production,LOG_LEVEL=info,CLOUDSQL_INSTANCE=${_CLOUDSQL_INSTANCE},DB_NAME=spot_canvas,DB_USER=spot,ENFORCE_AUTH=${_ENFORCE_AUTH}
+      - --set-env-vars=ENVIRONMENT=production,LOG_LEVEL=info,CLOUDSQL_INSTANCE=${_CLOUDSQL_INSTANCE},DB_NAME=spot_canvas,DB_USER=spot,ENFORCE_AUTH=true
       - --set-secrets=DB_PASSWORD=signalngn-prod-db-password:latest,NATS_URLS=signalngn-prod-nats-url:latest,NATS_CREDS=signalngn-prod-nats-creds:latest
     waitFor:
       - push

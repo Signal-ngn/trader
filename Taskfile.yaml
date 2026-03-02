@@ -178,9 +178,13 @@ tasks:
   # ─── Deployment ────────────────────────────────────────────
 
   deploy:production:
-    desc: Deploy to production via Cloud Build using cloudbuild-prod.yaml
+    desc: Build image and deploy to production (signalngn-prod, europe-west1)
     cmds:
-      - gcloud builds submit --project=signalngn-prod --config=cloudbuild-prod.yaml --substitutions=_TAG=$(git rev-parse --short HEAD)
+      - gcloud builds submit
+          --project=signalngn-prod
+          --region=europe-west1
+          --config=cloudbuild-prod.yaml
+          --substitutions=_TAG=$(git rev-parse --short HEAD)
 
   # ─── Utilities ─────────────────────────────────────────────
 
