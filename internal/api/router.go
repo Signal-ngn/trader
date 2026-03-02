@@ -18,22 +18,29 @@ import (
 
 // Server holds the HTTP server dependencies.
 type Server struct {
-	repo        *store.Repository
-	userRepo    *store.UserRepository
-	nc          *nats.Conn
-	enforceAuth bool
-	defaultTID  uuid.UUID
+	repo           *store.Repository
+	userRepo       *store.UserRepository
+	nc             *nats.Conn
+	enforceAuth    bool
+	defaultTID     uuid.UUID
+	streamRegistry *StreamRegistry
 }
 
 // NewServer creates a new API server.
 func NewServer(repo *store.Repository, userRepo *store.UserRepository, nc *nats.Conn, enforceAuth bool, defaultTenantID uuid.UUID) *Server {
 	return &Server{
-		repo:        repo,
-		userRepo:    userRepo,
-		nc:          nc,
-		enforceAuth: enforceAuth,
-		defaultTID:  defaultTenantID,
+		repo:           repo,
+		userRepo:       userRepo,
+		nc:             nc,
+		enforceAuth:    enforceAuth,
+		defaultTID:     defaultTenantID,
+		streamRegistry: NewStreamRegistry(),
 	}
+}
+
+// StreamRegistry returns the server's trade stream registry.
+func (s *Server) StreamRegistry() *StreamRegistry {
+	return s.streamRegistry
 }
 
 // Router returns the configured chi router.
@@ -75,6 +82,7 @@ func (s *Server) Router() http.Handler {
 		r.Get("/accounts/{accountId}/portfolio", s.handlePortfolioSummary)
 		r.Get("/accounts/{accountId}/positions", s.handleListPositions)
 		r.Get("/accounts/{accountId}/trades", s.handleListTrades)
+		r.Get("/accounts/{accountId}/trades/stream", s.handleTradeStream)
 		r.Get("/accounts/{accountId}/orders", s.handleListOrders)
 		r.Put("/accounts/{accountId}/balance", s.handleSetBalance)
 		r.Get("/accounts/{accountId}/balance", s.handleGetBalance)

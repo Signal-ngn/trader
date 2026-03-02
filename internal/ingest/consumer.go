@@ -28,11 +28,18 @@ const (
 	ConsumerName = "trader-trade-consumer"
 )
 
+// TradePublisher is an interface for publishing trade events to SSE subscribers.
+// The api.StreamRegistry satisfies this interface.
+type TradePublisher interface {
+	Publish(accountID string, payload interface{})
+}
+
 // Consumer subscribes to trade events via NATS JetStream.
 type Consumer struct {
-	nc     *nats.Conn
-	repo   *store.Repository
-	logger zerolog.Logger
+	nc        *nats.Conn
+	repo      *store.Repository
+	publisher TradePublisher // optional — nil means no SSE fanout
+	logger    zerolog.Logger
 }
 
 // NewConsumer creates a new NATS trade consumer.
@@ -42,6 +49,11 @@ func NewConsumer(nc *nats.Conn, repo *store.Repository) *Consumer {
 		repo:   repo,
 		logger: log.With().Str("component", "ingest").Logger(),
 	}
+}
+
+// WithPublisher sets the trade publisher for SSE fanout.
+func (c *Consumer) WithPublisher(p TradePublisher) {
+	c.publisher = p
 }
 
 // Start begins consuming trade events. Blocks until context is cancelled.
@@ -167,6 +179,9 @@ func (c *Consumer) handleMessage(ctx context.Context, msg jetstream.Msg) error {
 			Float64("price", trade.Price).
 			Msg("ingested trade")
 		publishTradeNotification(c.nc, tenantID, trade.AccountID, trade.TradeID)
+		if c.publisher != nil {
+			c.publisher.Publish(trade.AccountID, tradeToSSEPayload(trade))
+		}
 	} else {
 		c.logger.Debug().
 			Str("tenant_id", tenantID.String()).
@@ -175,6 +190,45 @@ func (c *Consumer) handleMessage(ctx context.Context, msg jetstream.Msg) error {
 	}
 
 	return nil
+}
+
+// tradeSSEPayload is the payload sent to SSE subscribers for each trade event.
+type tradeSSEPayload struct {
+	TradeID     string   `json:"trade_id"`
+	AccountID   string   `json:"account_id"`
+	Symbol      string   `json:"symbol"`
+	Side        string   `json:"side"`
+	Quantity    float64  `json:"quantity"`
+	Price       float64  `json:"price"`
+	Fee         float64  `json:"fee"`
+	MarketType  string   `json:"market_type"`
+	Timestamp   string   `json:"timestamp"`
+	Strategy    *string  `json:"strategy,omitempty"`
+	Confidence  *float64 `json:"confidence,omitempty"`
+	StopLoss    *float64 `json:"stop_loss,omitempty"`
+	TakeProfit  *float64 `json:"take_profit,omitempty"`
+	EntryReason *string  `json:"entry_reason,omitempty"`
+	ExitReason  *string  `json:"exit_reason,omitempty"`
+}
+
+func tradeToSSEPayload(t *domain.Trade) tradeSSEPayload {
+	return tradeSSEPayload{
+		TradeID:     t.TradeID,
+		AccountID:   t.AccountID,
+		Symbol:      t.Symbol,
+		Side:        string(t.Side),
+		Quantity:    t.Quantity,
+		Price:       t.Price,
+		Fee:         t.Fee,
+		MarketType:  string(t.MarketType),
+		Timestamp:   t.Timestamp.UTC().Format(time.RFC3339),
+		Strategy:    t.Strategy,
+		Confidence:  t.Confidence,
+		StopLoss:    t.StopLoss,
+		TakeProfit:  t.TakeProfit,
+		EntryReason: t.EntryReason,
+		ExitReason:  t.ExitReason,
+	}
 }
 
 // publishTradeNotification publishes a lightweight JSON notification to

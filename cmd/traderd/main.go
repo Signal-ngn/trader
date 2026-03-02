@@ -15,6 +15,7 @@ import (
 	"github.com/Signal-ngn/trader/internal/api"
 	"github.com/Signal-ngn/trader/internal/api/middleware"
 	"github.com/Signal-ngn/trader/internal/config"
+	"github.com/Signal-ngn/trader/internal/engine"
 	"github.com/Signal-ngn/trader/internal/ingest"
 	"github.com/Signal-ngn/trader/internal/store"
 )
@@ -107,6 +108,17 @@ func main() {
 		}
 	}()
 
+	// Start trading engine when enabled — runs after DB is ready.
+	if cfg.TradingEnabled {
+		eng := engine.New(cfg, repo)
+		go func() {
+			if err := eng.Start(ctx); err != nil {
+				log.Error().Err(err).Msg("trading engine error")
+			}
+		}()
+		log.Info().Str("account", cfg.TraderAccount).Str("mode", cfg.TradingMode).Msg("trading engine starting")
+	}
+
 	// Connect to NATS in the background so startup doesn't block.
 	// The consumer starts automatically once connected.
 	go func() {
@@ -120,6 +132,7 @@ func main() {
 		log.Info().Str("url", nc.ConnectedUrl()).Msg("connected to NATS")
 
 		consumer := ingest.NewConsumer(nc, repo)
+		consumer.WithPublisher(srv.StreamRegistry())
 		if err := consumer.Start(ctx); err != nil {
 			log.Error().Err(err).Msg("NATS consumer error")
 		}

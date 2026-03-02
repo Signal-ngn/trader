@@ -1,0 +1,530 @@
+package engine
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
+
+	"github.com/Signal-ngn/trader/internal/api/middleware"
+	"github.com/Signal-ngn/trader/internal/domain"
+	"github.com/Signal-ngn/trader/internal/store"
+)
+
+// processSignal routes a signal to the position engine.
+func (e *Engine) processSignal(ctx context.Context, signal SignalPayload, product, strategy string) {
+	logger := e.logger.With().
+		Str("product", product).
+		Str("action", signal.Action).
+		Float64("price", signal.Price).
+		Logger()
+
+	// Kill switch check.
+	if (signal.Action == "BUY" || signal.Action == "SHORT") && e.killSwitchActive() {
+		logger.Warn().Str("file", e.cfg.KillSwitchFile).Msg("kill switch active — skipping open trade")
+		return
+	}
+
+	// Fetch trading config for this product to get market type and leverage.
+	tradingConfigs, err := fetchTradingConfigs(ctx, e.cfg)
+	if err != nil {
+		logger.Error().Err(err).Msg("failed to fetch trading configs, skipping signal")
+		return
+	}
+	tradingConfig, ok := tradingConfigs[product]
+	if !ok {
+		logger.Warn().Msg("no trading config for product, skipping signal")
+		return
+	}
+
+	switch signal.Action {
+	case "BUY", "SHORT":
+		e.handleOpenSignal(ctx, signal, product, strategy, tradingConfig)
+	case "SELL", "COVER":
+		e.handleCloseSignal(ctx, signal, product, strategy, tradingConfig)
+	default:
+		logger.Warn().Str("action", signal.Action).Msg("unknown signal action, skipping")
+	}
+}
+
+// handleOpenSignal handles BUY and SHORT signals.
+func (e *Engine) handleOpenSignal(ctx context.Context, signal SignalPayload, product, strategy string, tc *TradingConfig) {
+	logger := e.logger.With().
+		Str("product", product).
+		Str("action", signal.Action).
+		Logger()
+
+	// Determine market type and side.
+	side, positionSide, marketType := mapSignalToSide(signal.Action, tc)
+
+	// Daily loss limit check.
+	if e.cfg.DailyLossLimit > 0 && e.isDailyLossLimitReached(ctx) {
+		logger.Warn().Float64("limit", e.cfg.DailyLossLimit).Msg("daily loss limit reached — skipping open trade")
+		return
+	}
+
+	// Direction conflict guard.
+	e.conflictMu.Lock()
+	if openSide, exists := e.conflict[product]; exists {
+		if openSide != string(positionSide) {
+			e.conflictMu.Unlock()
+			logger.Warn().Str("open_side", openSide).Str("want", string(positionSide)).
+				Msg("direction conflict — skipping trade")
+			return
+		}
+	}
+	e.conflictMu.Unlock()
+
+	// Max positions check.
+	if e.cfg.MaxPositions > 0 {
+		states, err := e.repo.CountOpenPositionStates(ctx, e.cfg.TraderAccount)
+		if err != nil {
+			logger.Error().Err(err).Msg("failed to count open positions")
+			return
+		}
+		if states >= e.cfg.MaxPositions {
+			logger.Warn().Int("max", e.cfg.MaxPositions).Int("open", states).
+				Msg("max positions reached — skipping trade")
+			return
+		}
+	}
+
+	// Calculate position size.
+	size, qty, margin, err := e.calculatePositionSize(signal, tc, marketType)
+	if err != nil {
+		logger.Error().Err(err).Msg("failed to calculate position size")
+		return
+	}
+
+	// Balance check.
+	tenantID := e.tenantID()
+	required := margin
+	if marketType == domain.MarketTypeSpot {
+		required = size // cost for spot
+	}
+	if err := e.checkBalance(ctx, tenantID, required); err != nil {
+		logger.Warn().Err(err).Msg("insufficient balance — skipping trade")
+		return
+	}
+
+	// Build trade.
+	now := time.Now().UTC()
+	leverage := tc.LongLeverage
+	if signal.Action == "SHORT" {
+		leverage = tc.ShortLeverage
+	}
+
+	var sl, tp *float64
+	if signal.StopLoss > 0 {
+		v := signal.StopLoss
+		sl = &v
+	}
+	if signal.TakeProfit > 0 {
+		v := signal.TakeProfit
+		tp = &v
+	}
+	var conf *float64
+	if signal.Confidence > 0 {
+		v := signal.Confidence
+		conf = &v
+	}
+	var stratPtr *string
+	if strategy != "" {
+		v := strategy
+		stratPtr = &v
+	}
+	var marginPtr *float64
+	if marketType == domain.MarketTypeFutures && margin > 0 {
+		v := margin
+		marginPtr = &v
+	}
+	var leveragePtr *int
+	if leverage > 0 {
+		v := leverage
+		leveragePtr = &v
+	}
+
+	trade := &domain.Trade{
+		TenantID:    tenantID,
+		TradeID:     fmt.Sprintf("engine-%s-%s-%d", e.cfg.TraderAccount, product, now.UnixNano()),
+		AccountID:   e.cfg.TraderAccount,
+		Symbol:      product,
+		Side:        side,
+		Quantity:    qty,
+		Price:       signal.Price,
+		Fee:         0,
+		FeeCurrency: "USD",
+		MarketType:  marketType,
+		Timestamp:   now,
+		IngestedAt:  now,
+		Leverage:    leveragePtr,
+		Margin:      marginPtr,
+		Strategy:    stratPtr,
+		Confidence:  conf,
+		StopLoss:    sl,
+		TakeProfit:  tp,
+	}
+	if signal.Reason != "" {
+		r := signal.Reason
+		trade.EntryReason = &r
+	}
+
+	// Execute the trade.
+	if err := e.executeOpenTrade(ctx, signal, trade, positionSide); err != nil {
+		logger.Error().Err(err).Msg("failed to execute open trade")
+		return
+	}
+
+	// Update cooldown.
+	key := cooldownKey{symbol: product, action: signal.Action}
+	e.cooldownMu.Lock()
+	e.cooldown[key] = time.Now().Add(5 * time.Minute)
+	e.cooldownMu.Unlock()
+
+	// Update conflict guard.
+	e.conflictMu.Lock()
+	e.conflict[product] = string(positionSide)
+	e.conflictMu.Unlock()
+
+	// Persist position state.
+	dbState := &store.EnginePositionState{
+		AccountID:  e.cfg.TraderAccount,
+		Symbol:     product,
+		MarketType: string(marketType),
+		Side:       string(positionSide),
+		EntryPrice: signal.Price,
+		Leverage:   leverage,
+		Strategy:   strategy,
+		OpenedAt:   now,
+	}
+	if sl != nil {
+		dbState.StopLoss = *sl
+	}
+	if tp != nil {
+		dbState.TakeProfit = *tp
+	}
+
+	if err := e.repo.InsertPositionState(ctx, tenantID, dbState); err != nil {
+		logger.Error().Err(err).Msg("failed to persist position state")
+	} else {
+		ps := &PositionState{
+			AccountID:  dbState.AccountID,
+			Symbol:     dbState.Symbol,
+			MarketType: dbState.MarketType,
+			Side:       dbState.Side,
+			EntryPrice: dbState.EntryPrice,
+			StopLoss:   dbState.StopLoss,
+			TakeProfit: dbState.TakeProfit,
+			Leverage:   dbState.Leverage,
+			Strategy:   dbState.Strategy,
+			OpenedAt:   dbState.OpenedAt,
+		}
+		e.posStateMu.Lock()
+		e.posState[product] = ps
+		e.posStateMu.Unlock()
+	}
+}
+
+// handleCloseSignal handles SELL and COVER signals.
+func (e *Engine) handleCloseSignal(ctx context.Context, signal SignalPayload, product, strategy string, tc *TradingConfig) {
+	logger := e.logger.With().Str("product", product).Str("action", signal.Action).Logger()
+
+	// Check if we have an open position for this product.
+	e.posStateMu.RLock()
+	ps, exists := e.posState[product]
+	e.posStateMu.RUnlock()
+
+	if !exists {
+		logger.Debug().Msg("no open position state for product, ignoring close signal")
+		return
+	}
+
+	exitReason := "signal"
+	e.executeCloseTrade(ctx, ps, signal.Price, exitReason)
+}
+
+// mapSignalToSide maps a signal action to trade side, position side, and market type.
+func mapSignalToSide(action string, tc *TradingConfig) (domain.Side, domain.PositionSide, domain.MarketType) {
+	// Determine market type: if there are long/short strategies, it's futures; otherwise spot.
+	marketType := domain.MarketTypeSpot
+	if len(tc.StrategiesLong) > 0 || len(tc.StrategiesShort) > 0 {
+		marketType = domain.MarketTypeFutures
+	}
+
+	switch action {
+	case "BUY":
+		return domain.SideBuy, domain.PositionSideLong, marketType
+	case "SELL":
+		return domain.SideSell, domain.PositionSideLong, marketType
+	case "SHORT":
+		return domain.SideSell, domain.PositionSideShort, marketType
+	case "COVER":
+		return domain.SideBuy, domain.PositionSideShort, marketType
+	default:
+		return domain.SideBuy, domain.PositionSideLong, marketType
+	}
+}
+
+// calculatePositionSize returns (size, quantity, margin, error).
+func (e *Engine) calculatePositionSize(signal SignalPayload, tc *TradingConfig, marketType domain.MarketType) (size, qty, margin float64, err error) {
+	pct := e.cfg.PositionSizePct
+	if signal.PositionPct > 0 {
+		pct = signal.PositionPct * 100 // signal uses 0–1 fraction
+	}
+
+	size = e.cfg.PortfolioSize * (pct / 100)
+
+	// Clamp to [min, max].
+	if e.cfg.MinPositionSize > 0 && size < e.cfg.MinPositionSize {
+		size = e.cfg.MinPositionSize
+	}
+	if e.cfg.MaxPositionSize > 0 && size > e.cfg.MaxPositionSize {
+		size = e.cfg.MaxPositionSize
+	}
+
+	if signal.Price <= 0 {
+		return 0, 0, 0, fmt.Errorf("signal price is zero or negative")
+	}
+	qty = size / signal.Price
+
+	if marketType == domain.MarketTypeFutures {
+		leverage := float64(tc.LongLeverage)
+		if leverage <= 0 {
+			leverage = 1
+		}
+		margin = size / leverage
+	}
+
+	return size, qty, margin, nil
+}
+
+// checkBalance checks whether the account has sufficient balance for a trade.
+// Returns an error if balance exists and is insufficient. Bypasses check if no balance row exists.
+func (e *Engine) checkBalance(ctx context.Context, tenantID uuid.UUID, required float64) error {
+	balance, err := e.repo.GetAccountBalance(ctx, tenantID, e.cfg.TraderAccount, "USD")
+	if err != nil {
+		return fmt.Errorf("get balance: %w", err)
+	}
+	if balance == nil {
+		return nil // no balance set, bypass check
+	}
+	if *balance < required {
+		return fmt.Errorf("insufficient balance: need $%.2f, have $%.2f", required, *balance)
+	}
+	return nil
+}
+
+// executeOpenTrade executes an open trade in paper or live mode.
+func (e *Engine) executeOpenTrade(ctx context.Context, signal SignalPayload, trade *domain.Trade, positionSide domain.PositionSide) error {
+	tenantID := e.tenantID()
+
+	if e.cfg.TradingMode == "live" {
+		req := OpenPositionRequest{
+			Symbol:    trade.Symbol,
+			Side:      positionSide,
+			SizeUSD:   signal.Price * trade.Quantity,
+			Leverage:  0,
+			Price:     signal.Price,
+		}
+		if trade.Leverage != nil {
+			req.Leverage = *trade.Leverage
+		}
+		result, err := e.exchange.OpenPosition(ctx, req)
+		if err != nil {
+			return fmt.Errorf("exchange open position: %w", err)
+		}
+		trade.Price = result.FillPrice
+		trade.Quantity = result.Quantity
+		trade.Fee = result.Fee
+		if trade.Margin != nil && result.Margin > 0 {
+			m := result.Margin
+			trade.Margin = &m
+		}
+	}
+
+	// Compute cost basis for buys.
+	if trade.Side == domain.SideBuy {
+		trade.CostBasis = trade.Quantity*trade.Price + trade.Fee
+	}
+
+	inserted, err := e.repo.InsertTradeAndUpdatePosition(ctx, tenantID, trade)
+	if err != nil {
+		if e.cfg.TradingMode == "live" {
+			log.Error().
+				Str("trade_id", trade.TradeID).
+				Str("symbol", trade.Symbol).
+				Float64("price", trade.Price).
+				Float64("qty", trade.Quantity).
+				Msg("CRITICAL: exchange order executed but ledger write failed — manual recovery required")
+		}
+		return fmt.Errorf("insert trade: %w", err)
+	}
+	if inserted {
+		e.logger.Info().
+			Str("trade_id", trade.TradeID).
+			Str("symbol", trade.Symbol).
+			Str("side", string(trade.Side)).
+			Float64("qty", trade.Quantity).
+			Float64("price", trade.Price).
+			Msg("trade executed and recorded")
+	}
+	return nil
+}
+
+// executeCloseTrade executes a close trade.
+func (e *Engine) executeCloseTrade(ctx context.Context, ps *PositionState, currentPrice float64, exitReason string) {
+	logger := e.logger.With().Str("symbol", ps.Symbol).Str("exit_reason", exitReason).Logger()
+	tenantID := e.tenantID()
+
+	// Determine close side (opposite of open side).
+	var side domain.Side
+	if ps.Side == "long" {
+		side = domain.SideSell
+	} else {
+		side = domain.SideBuy
+	}
+
+	marketType := domain.MarketType(ps.MarketType)
+	now := time.Now().UTC()
+
+	// Load current open position to get quantity.
+	openPositions, err := e.repo.ListOpenPositionsForAccount(ctx, e.cfg.TraderAccount)
+	if err != nil {
+		logger.Error().Err(err).Msg("failed to load open positions for close")
+		return
+	}
+
+	var qty float64
+	for _, p := range openPositions {
+		if p.Symbol == ps.Symbol && string(p.MarketType) == ps.MarketType {
+			qty = p.Quantity
+			break
+		}
+	}
+	if qty <= 0 {
+		logger.Warn().Msg("no open position quantity found, skipping close")
+		return
+	}
+
+	if e.cfg.TradingMode == "live" {
+		req := ClosePositionRequest{
+			Symbol:      ps.Symbol,
+			Side:        domain.PositionSide(ps.Side),
+			MarketType:  marketType,
+		}
+		result, err := e.exchange.ClosePosition(ctx, req)
+		if err != nil {
+			logger.Error().Err(err).Msg("exchange close position failed")
+			return
+		}
+		currentPrice = result.FillPrice
+		qty = result.Quantity
+	}
+
+	var leveragePtr *int
+	if ps.Leverage > 0 {
+		v := ps.Leverage
+		leveragePtr = &v
+	}
+	var stratPtr *string
+	if ps.Strategy != "" {
+		v := ps.Strategy
+		stratPtr = &v
+	}
+	exitStr := exitReason
+
+	trade := &domain.Trade{
+		TenantID:    tenantID,
+		TradeID:     fmt.Sprintf("engine-close-%s-%s-%d", e.cfg.TraderAccount, ps.Symbol, now.UnixNano()),
+		AccountID:   e.cfg.TraderAccount,
+		Symbol:      ps.Symbol,
+		Side:        side,
+		Quantity:    qty,
+		Price:       currentPrice,
+		Fee:         0,
+		FeeCurrency: "USD",
+		MarketType:  marketType,
+		Timestamp:   now,
+		IngestedAt:  now,
+		Leverage:    leveragePtr,
+		Strategy:    stratPtr,
+		ExitReason:  &exitStr,
+	}
+
+	// Cost basis for sell = avg entry price × quantity (used by store for P&L).
+	avgEntry, err := e.repo.GetAvgEntryPrice(ctx, tenantID, e.cfg.TraderAccount, ps.Symbol, marketType)
+	if err != nil {
+		logger.Warn().Err(err).Msg("failed to get avg entry price")
+	}
+	store.CostBasisForTrade(trade, avgEntry)
+
+	_, err = e.repo.InsertTradeAndUpdatePosition(ctx, tenantID, trade)
+	if err != nil {
+		logger.Error().Err(err).Msg("failed to record close trade")
+		return
+	}
+
+	logger.Info().
+		Float64("price", currentPrice).
+		Float64("qty", qty).
+		Str("exit_reason", exitReason).
+		Msg("position closed")
+
+	// Clean up position state.
+	if err := e.repo.DeletePositionState(ctx, tenantID, ps.Symbol, ps.MarketType, e.cfg.TraderAccount); err != nil {
+		logger.Warn().Err(err).Msg("failed to delete position state")
+	}
+	e.posStateMu.Lock()
+	delete(e.posState, ps.Symbol)
+	e.posStateMu.Unlock()
+
+	// Remove from conflict guard.
+	e.conflictMu.Lock()
+	delete(e.conflict, ps.Symbol)
+	e.conflictMu.Unlock()
+}
+
+// killSwitchActive returns true if the kill switch file exists.
+func (e *Engine) killSwitchActive() bool {
+	if e.cfg.KillSwitchFile == "" {
+		return false
+	}
+	_, err := os.Stat(e.cfg.KillSwitchFile)
+	return err == nil
+}
+
+// isDailyLossLimitReached queries the DB for realised P&L since midnight UTC
+// and returns true when total losses exceed cfg.DailyLossLimit.
+//
+// Using the DB (rather than an in-memory counter) means:
+//   - The limit survives engine restarts.
+//   - Trades closed by the risk loop, by a signal, or recorded manually via the
+//     API all count toward the limit — not just opens executed by this goroutine.
+func (e *Engine) isDailyLossLimitReached(ctx context.Context) bool {
+	pnl, err := e.repo.DailyRealizedPnL(ctx, e.cfg.TraderAccount)
+	if err != nil {
+		e.logger.Warn().Err(err).Msg("daily loss check: DB query failed, allowing trade")
+		return false
+	}
+	// pnl is negative when there are net losses.
+	loss := -pnl
+	if loss < 0 {
+		loss = 0
+	}
+	if loss >= e.cfg.DailyLossLimit {
+		e.logger.Warn().
+			Float64("loss_today", loss).
+			Float64("limit", e.cfg.DailyLossLimit).
+			Msg("daily loss limit reached")
+		return true
+	}
+	return false
+}
+
+// tenantID returns the default tenant UUID used by the engine.
+func (e *Engine) tenantID() uuid.UUID {
+	return uuid.MustParse(middleware.DefaultTenantID.String())
+}

@@ -2,8 +2,8 @@
 bin/
 *.exe
 cloud-sql-proxy
-trader
-traderd
+/trader
+/traderd
 
 # Environment & secrets
 .env
