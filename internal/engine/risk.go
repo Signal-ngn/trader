@@ -175,31 +175,61 @@ func (e *Engine) evaluatePosition(ctx context.Context, ps *PositionState) {
 
 	// 1. Max hold time check.
 	if time.Since(ps.OpenedAt) > maxHoldDuration {
-		logger.Info().Dur("held_for", time.Since(ps.OpenedAt)).Msg("max hold time reached — closing position")
+		logger.Info().
+			Str("position_side", ps.Side).
+			Float64("entry_price", ps.EntryPrice).
+			Float64("current_price", currentPrice).
+			Dur("held_for", time.Since(ps.OpenedAt)).
+			Str("strategy", ps.Strategy).
+			Msg("max hold time reached — closing position")
 		e.executeCloseTrade(ctx, ps, currentPrice, "max hold time")
 		return
 	}
 
 	// 2. Stop-loss check.
 	if ps.Side == "long" && currentPrice <= sl {
-		logger.Info().Float64("stop_loss", sl).Msg("stop-loss hit — closing position")
+		logger.Info().
+			Str("position_side", ps.Side).
+			Float64("entry_price", ps.EntryPrice).
+			Float64("current_price", currentPrice).
+			Float64("stop_loss", sl).
+			Str("strategy", ps.Strategy).
+			Msg("stop-loss hit — closing position")
 		e.executeCloseTrade(ctx, ps, currentPrice, "stop loss")
 		return
 	}
 	if ps.Side == "short" && currentPrice >= sl {
-		logger.Info().Float64("stop_loss", sl).Msg("stop-loss hit — closing position")
+		logger.Info().
+			Str("position_side", ps.Side).
+			Float64("entry_price", ps.EntryPrice).
+			Float64("current_price", currentPrice).
+			Float64("stop_loss", sl).
+			Str("strategy", ps.Strategy).
+			Msg("stop-loss hit — closing position")
 		e.executeCloseTrade(ctx, ps, currentPrice, "stop loss")
 		return
 	}
 
 	// 3. Take-profit check.
 	if ps.Side == "long" && currentPrice >= tp {
-		logger.Info().Float64("take_profit", tp).Msg("take-profit hit — closing position")
+		logger.Info().
+			Str("position_side", ps.Side).
+			Float64("entry_price", ps.EntryPrice).
+			Float64("current_price", currentPrice).
+			Float64("take_profit", tp).
+			Str("strategy", ps.Strategy).
+			Msg("take-profit hit — closing position")
 		e.executeCloseTrade(ctx, ps, currentPrice, "take profit")
 		return
 	}
 	if ps.Side == "short" && currentPrice <= tp {
-		logger.Info().Float64("take_profit", tp).Msg("take-profit hit — closing position")
+		logger.Info().
+			Str("position_side", ps.Side).
+			Float64("entry_price", ps.EntryPrice).
+			Float64("current_price", currentPrice).
+			Float64("take_profit", tp).
+			Str("strategy", ps.Strategy).
+			Msg("take-profit hit — closing position")
 		e.executeCloseTrade(ctx, ps, currentPrice, "take profit")
 		return
 	}
@@ -270,12 +300,26 @@ func (e *Engine) evaluatePosition(ctx context.Context, ps *PositionState) {
 		// Check if trailing stop is breached.
 		if ps.TrailingStop > 0 {
 			if ps.Side == "long" && currentPrice <= ps.TrailingStop {
-				logger.Info().Float64("trailing_stop", ps.TrailingStop).Msg("trailing stop hit — closing position")
+				logger.Info().
+					Str("position_side", ps.Side).
+					Float64("entry_price", ps.EntryPrice).
+					Float64("current_price", currentPrice).
+					Float64("trailing_stop", ps.TrailingStop).
+					Float64("peak_price", ps.PeakPrice).
+					Str("strategy", ps.Strategy).
+					Msg("trailing stop hit — closing position")
 				e.executeCloseTrade(ctx, ps, currentPrice, "trailing stop")
 				return
 			}
 			if ps.Side == "short" && currentPrice >= ps.TrailingStop {
-				logger.Info().Float64("trailing_stop", ps.TrailingStop).Msg("trailing stop hit — closing position")
+				logger.Info().
+					Str("position_side", ps.Side).
+					Float64("entry_price", ps.EntryPrice).
+					Float64("current_price", currentPrice).
+					Float64("trailing_stop", ps.TrailingStop).
+					Float64("peak_price", ps.PeakPrice).
+					Str("strategy", ps.Strategy).
+					Msg("trailing stop hit — closing position")
 				e.executeCloseTrade(ctx, ps, currentPrice, "trailing stop")
 				return
 			}

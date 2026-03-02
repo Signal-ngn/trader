@@ -55,6 +55,9 @@ func (e *Engine) handleOpenSignal(ctx context.Context, signal SignalPayload, pro
 	logger := e.logger.With().
 		Str("product", product).
 		Str("action", signal.Action).
+		Str("strategy", strategy).
+		Float64("price", signal.Price).
+		Float64("confidence", signal.Confidence).
 		Logger()
 
 	// Determine market type and side.
@@ -172,6 +175,25 @@ func (e *Engine) handleOpenSignal(ctx context.Context, signal SignalPayload, pro
 		trade.EntryReason = &r
 	}
 
+	// Log before executing so a crash mid-flight is still visible.
+	slVal, tpVal := 0.0, 0.0
+	if sl != nil {
+		slVal = *sl
+	}
+	if tp != nil {
+		tpVal = *tp
+	}
+	logger.Info().
+		Str("market_type", string(marketType)).
+		Str("position_side", string(positionSide)).
+		Float64("size_usd", size).
+		Float64("qty", qty).
+		Float64("stop_loss", slVal).
+		Float64("take_profit", tpVal).
+		Int("leverage", leverage).
+		Str("mode", e.cfg.TradingMode).
+		Msg("opening position")
+
 	// Execute the trade.
 	if err := e.executeOpenTrade(ctx, signal, trade, positionSide); err != nil {
 		logger.Error().Err(err).Msg("failed to execute open trade")
@@ -230,7 +252,12 @@ func (e *Engine) handleOpenSignal(ctx context.Context, signal SignalPayload, pro
 
 // handleCloseSignal handles SELL and COVER signals.
 func (e *Engine) handleCloseSignal(ctx context.Context, signal SignalPayload, product, strategy string, tc *TradingConfig) {
-	logger := e.logger.With().Str("product", product).Str("action", signal.Action).Logger()
+	logger := e.logger.With().
+		Str("product", product).
+		Str("action", signal.Action).
+		Str("strategy", strategy).
+		Float64("price", signal.Price).
+		Logger()
 
 	// Check if we have an open position for this product.
 	e.posStateMu.RLock()
@@ -241,6 +268,12 @@ func (e *Engine) handleCloseSignal(ctx context.Context, signal SignalPayload, pr
 		logger.Debug().Msg("no open position state for product, ignoring close signal")
 		return
 	}
+
+	logger.Info().
+		Str("position_side", ps.Side).
+		Float64("entry_price", ps.EntryPrice).
+		Str("mode", e.cfg.TradingMode).
+		Msg("closing position on signal")
 
 	exitReason := "signal"
 	e.executeCloseTrade(ctx, ps, signal.Price, exitReason)
@@ -363,13 +396,24 @@ func (e *Engine) executeOpenTrade(ctx context.Context, signal SignalPayload, tra
 		return fmt.Errorf("insert trade: %w", err)
 	}
 	if inserted {
-		e.logger.Info().
+		ev := e.logger.Info().
 			Str("trade_id", trade.TradeID).
 			Str("symbol", trade.Symbol).
 			Str("side", string(trade.Side)).
+			Str("market_type", string(trade.MarketType)).
 			Float64("qty", trade.Quantity).
 			Float64("price", trade.Price).
-			Msg("trade executed and recorded")
+			Float64("fee", trade.Fee)
+		if trade.Strategy != nil {
+			ev = ev.Str("strategy", *trade.Strategy)
+		}
+		if trade.Leverage != nil {
+			ev = ev.Int("leverage", *trade.Leverage)
+		}
+		if trade.Margin != nil {
+			ev = ev.Float64("margin", *trade.Margin)
+		}
+		ev.Msg("position opened")
 	}
 	return nil
 }
@@ -467,11 +511,23 @@ func (e *Engine) executeCloseTrade(ctx context.Context, ps *PositionState, curre
 		return
 	}
 
-	logger.Info().
-		Float64("price", currentPrice).
+	pnl := (currentPrice - ps.EntryPrice) * qty
+	if ps.Side == "short" {
+		pnl = (ps.EntryPrice - currentPrice) * qty
+	}
+	ev := logger.Info().
+		Str("trade_id", trade.TradeID).
+		Str("position_side", ps.Side).
+		Str("market_type", string(marketType)).
+		Float64("entry_price", ps.EntryPrice).
+		Float64("exit_price", currentPrice).
 		Float64("qty", qty).
-		Str("exit_reason", exitReason).
-		Msg("position closed")
+		Float64("pnl", pnl).
+		Str("exit_reason", exitReason)
+	if ps.Strategy != "" {
+		ev = ev.Str("strategy", ps.Strategy)
+	}
+	ev.Msg("position closed")
 
 	// Clean up position state.
 	if err := e.repo.DeletePositionState(ctx, tenantID, ps.Symbol, ps.MarketType, e.cfg.TraderAccount); err != nil {
