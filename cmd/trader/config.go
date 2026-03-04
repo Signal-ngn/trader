@@ -23,6 +23,7 @@ var validConfigKeys = []string{
 var configDefaults = map[string]string{
 	"trader_url":    "https://signalngn-trader-potbdcvufa-ew.a.run.app",
 	"api_url":       "https://signalngn-api-potbdcvufa-ew.a.run.app",
+	"web_url":       "https://signalngn.com",
 	"ingestion_url": "https://signalngn-ingestion-potbdcvufa-ew.a.run.app",
 	"nats_url":      "tls://connect.ngs.global",
 }
