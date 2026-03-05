@@ -70,9 +70,9 @@
 
 - [x] 8.1 Run full trader test suite; confirm no regressions in existing engine behaviour
 - [x] 8.2 Run `go vet ./...` and `go build ./...` in both trader and spot-canvas-app
-- [ ] 8.3 Open a paper position on the engine (via test signal), let it run and verify hard stop exit appears in logs with correct `"Layer 2: ..."` exit_reason in the ledger trade record
-- [ ] 8.4 Verify trailing stop state is persisted: open a paper position, let it profit past 1× SL distance, restart the engine, confirm `peak_price` and `trailing_stop` are restored from DB
-- [ ] 8.5 Run a 1h futures-short backtest on XLM or SUI with the updated backtester and confirm max drawdown is bounded by the hard stop (no 100%+ DD)
+- [x] 8.3 Open a paper position on the engine (via test signal), let it run and verify hard stop exit appears in logs with correct `"Layer 2: ..."` exit_reason in the ledger trade record
+- [x] 8.4 Verify trailing stop state is persisted: open a paper position, let it profit past 1× SL distance, restart the engine, confirm `peak_price` and `trailing_stop` are restored from DB
+- [x] 8.5 Run a 1h futures-short backtest on XLM or SUI with the updated backtester and confirm max drawdown is bounded by the hard stop (no 100%+ DD)
 
 ## 9. Follow-up: risk-adjusted training labels (separate change, requires retraining)
 
