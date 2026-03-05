@@ -21,8 +21,10 @@ type EnginePositionState struct {
 	EntryPrice   float64
 	StopLoss     float64
 	TakeProfit   float64
+	HardStop     float64 // leverage-scaled circuit-breaker price; 0 = not yet set
 	Leverage     int
 	Strategy     string
+	Granularity  string    // candle granularity from trading config; "" = unknown
 	OpenedAt     time.Time
 	PeakPrice    float64
 	TrailingStop float64
@@ -35,23 +37,25 @@ func (r *Repository) InsertPositionState(ctx context.Context, tenantID uuid.UUID
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO engine_position_state (
 			account_id, symbol, market_type, side, entry_price,
-			stop_loss, take_profit, leverage, strategy, opened_at,
+			stop_loss, take_profit, hard_stop, leverage, strategy, granularity, opened_at,
 			peak_price, trailing_stop, tenant_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		ON CONFLICT (account_id, symbol, market_type, tenant_id) DO UPDATE SET
 			side          = EXCLUDED.side,
 			entry_price   = EXCLUDED.entry_price,
 			stop_loss     = EXCLUDED.stop_loss,
 			take_profit   = EXCLUDED.take_profit,
+			hard_stop     = EXCLUDED.hard_stop,
 			leverage      = EXCLUDED.leverage,
 			strategy      = EXCLUDED.strategy,
+			granularity   = EXCLUDED.granularity,
 			opened_at     = EXCLUDED.opened_at,
 			peak_price    = EXCLUDED.peak_price,
 			trailing_stop = EXCLUDED.trailing_stop
 	`,
 		s.AccountID, s.Symbol, s.MarketType, s.Side, s.EntryPrice,
-		nullFloat(s.StopLoss), nullFloat(s.TakeProfit),
-		nullInt(s.Leverage), nullString(s.Strategy), s.OpenedAt,
+		nullFloat(s.StopLoss), nullFloat(s.TakeProfit), nullFloat(s.HardStop),
+		nullInt(s.Leverage), nullString(s.Strategy), nullString(s.Granularity), s.OpenedAt,
 		nullFloat(s.PeakPrice), nullFloat(s.TrailingStop),
 		tenantID,
 	)
@@ -65,8 +69,9 @@ func (r *Repository) InsertPositionState(ctx context.Context, tenantID uuid.UUID
 func (r *Repository) LoadPositionStates(ctx context.Context, accountID string) ([]EnginePositionState, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, account_id, symbol, market_type, side, entry_price,
-			COALESCE(stop_loss, 0), COALESCE(take_profit, 0), COALESCE(leverage, 0),
-			COALESCE(strategy, ''), opened_at,
+			COALESCE(stop_loss, 0), COALESCE(take_profit, 0),
+			COALESCE(hard_stop, 0), COALESCE(leverage, 0),
+			COALESCE(strategy, ''), COALESCE(granularity, ''), opened_at,
 			COALESCE(peak_price, 0), COALESCE(trailing_stop, 0)
 		FROM engine_position_state
 		WHERE account_id = $1
@@ -82,8 +87,8 @@ func (r *Repository) LoadPositionStates(ctx context.Context, accountID string) (
 		var s EnginePositionState
 		err := rows.Scan(
 			&s.ID, &s.AccountID, &s.Symbol, &s.MarketType, &s.Side, &s.EntryPrice,
-			&s.StopLoss, &s.TakeProfit, &s.Leverage,
-			&s.Strategy, &s.OpenedAt,
+			&s.StopLoss, &s.TakeProfit, &s.HardStop, &s.Leverage,
+			&s.Strategy, &s.Granularity, &s.OpenedAt,
 			&s.PeakPrice, &s.TrailingStop,
 		)
 		if err != nil {

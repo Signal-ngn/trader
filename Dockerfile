@@ -6,15 +6,15 @@ WORKDIR /app
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates
 
-# Copy go mod files first for better caching
+# Copy go mod files and vendor directory (includes local replace directives)
 COPY go.mod go.sum ./
-RUN go mod download
+COPY vendor/ vendor/
 
 # Copy source code
 COPY . .
 
-# Build the trader binary
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /trader ./cmd/traderd
+# Build the trader binary (vendor mode so local replace directives work in CI)
+RUN CGO_ENABLED=0 GOOS=linux go build -mod=vendor -ldflags="-w -s" -o /trader ./cmd/traderd
 
 # Runtime stage
 FROM alpine:3.19

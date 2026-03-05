@@ -3,20 +3,15 @@ package engine
 import (
 	"context"
 	"fmt"
-	"math"
 	"time"
 
+	"github.com/Signal-ngn/risk"
 	"github.com/Signal-ngn/trader/internal/store"
 )
 
 const (
-	riskLoopInterval    = 5 * time.Minute
-	maxHoldDuration     = 48 * time.Hour
-	trailingActivatePct = 0.03  // 3% unrealised P&L to activate trailing stop
-	trailingTrailPct    = 0.02  // trail 2% behind peak
-	slSanityPct         = 0.001 // 0.1% — if SL/TP within this, use default
-	defaultSLPct        = 0.04  // -4% default stop-loss
-	defaultTPPct        = 0.10  // +10% default take-profit
+	riskLoopInterval = 30 * time.Second
+	defaultSLPct     = 0.04 // 4% fallback SL distance used by risk library when SL=0
 )
 
 // exchangeForProduct returns the exchange name for a product by scanning the
@@ -32,7 +27,8 @@ func (e *Engine) exchangeForProduct(product string) string {
 	return ""
 }
 
-// startRiskLoop runs the risk management loop every 5 minutes.
+// startRiskLoop runs the risk management loop every 30 seconds.
+// This acts as a fallback for products with infrequent price signals.
 func (e *Engine) startRiskLoop(ctx context.Context) {
 	ticker := time.NewTicker(riskLoopInterval)
 	defer ticker.Stop()
@@ -102,17 +98,31 @@ func (e *Engine) evaluatePositions(ctx context.Context) error {
 	return nil
 }
 
-// evaluatePosition applies all risk rules to a single position.
+// evaluateOpenPositionsForSymbol evaluates exit conditions for all open positions
+// whose Symbol matches product. Called on every incoming price signal to provide
+// tick-level risk evaluation latency.
+func (e *Engine) evaluateOpenPositionsForSymbol(ctx context.Context, product string) {
+	e.posStateMu.RLock()
+	var matching []*PositionState
+	for _, ps := range e.posState {
+		if ps.Symbol == product {
+			matching = append(matching, ps)
+		}
+	}
+	e.posStateMu.RUnlock()
+
+	for _, ps := range matching {
+		e.evaluatePosition(ctx, ps)
+	}
+}
+
+// evaluatePosition applies all risk rules to a single position via the risk library.
 //
 // Price resolution order:
 //  1. Last price seen in a received NGS signal for this symbol (updated live as signals arrive).
 //  2. SN price API fetch (GET /prices/{exchange}/{product}) — used when no signal has arrived
 //     since startup or since the last risk loop tick.
 //  3. Skip evaluation for this tick if neither source is available (logs a warning).
-//
-// This means risk enforcement is as timely as the signal stream for active products.
-// For products with infrequent signals, the SN API provides a fallback with ~1-minute
-// granularity so SL/TP/trailing-stop checks still fire on each risk loop tick.
 func (e *Engine) evaluatePosition(ctx context.Context, ps *PositionState) {
 	tenantID := e.tenantID()
 
@@ -123,9 +133,6 @@ func (e *Engine) evaluatePosition(ctx context.Context, ps *PositionState) {
 
 	// 2. Fall back to SN price API.
 	if currentPrice <= 0 {
-		// We need the exchange name to call the price API. It's not stored in PositionState,
-		// so we derive it from the allowlist by looking for a matching product entry.
-		// If we can't find it, we skip rather than use a stale proxy.
 		exchange := e.exchangeForProduct(ps.Symbol)
 		if exchange == "" {
 			e.logger.Warn().Str("symbol", ps.Symbol).
@@ -149,184 +156,80 @@ func (e *Engine) evaluatePosition(ctx context.Context, ps *PositionState) {
 		return
 	}
 
-	logger := e.logger.With().Str("symbol", ps.Symbol).Float64("current_price", currentPrice).Logger()
+	logger := e.logger.With().
+		Str("symbol", ps.Symbol).
+		Float64("current_price", currentPrice).
+		Logger()
 
-	// Resolve effective stop-loss.
-	sl := ps.StopLoss
-	if ps.Side == "long" {
-		if sl <= 0 || math.Abs(sl-ps.EntryPrice)/ps.EntryPrice < slSanityPct {
-			sl = ps.EntryPrice * (1 - defaultSLPct)
-		}
-	} else {
-		if sl <= 0 || math.Abs(sl-ps.EntryPrice)/ps.EntryPrice < slSanityPct {
-			sl = ps.EntryPrice * (1 + defaultSLPct)
-		}
+	// Build risk.Position from PositionState for library evaluation.
+	riskPos := &risk.Position{
+		EntryPrice:   ps.EntryPrice,
+		Side:         ps.Side,
+		StopLoss:     ps.StopLoss,
+		TakeProfit:   ps.TakeProfit,
+		HardStop:     ps.HardStop,
+		Leverage:     ps.Leverage,
+		Strategy:     ps.Strategy,
+		Granularity:  ps.Granularity,
+		MarketType:   ps.MarketType,
+		OpenedAt:     ps.OpenedAt,
+		PeakPrice:    ps.PeakPrice,
+		TrailingStop: ps.TrailingStop,
 	}
 
-	// Resolve effective take-profit.
-	tp := ps.TakeProfit
-	if ps.Side == "long" {
-		if tp <= 0 || math.Abs(tp-ps.EntryPrice)/ps.EntryPrice < slSanityPct {
-			tp = ps.EntryPrice * (1 + defaultTPPct)
-		}
-	} else {
-		if tp <= 0 || math.Abs(tp-ps.EntryPrice)/ps.EntryPrice < slSanityPct {
-			tp = ps.EntryPrice * (1 - defaultTPPct)
-		}
-	}
+	oldPeak := riskPos.PeakPrice
+	oldTrail := riskPos.TrailingStop
 
-	// 1. Max hold time check.
-	if time.Since(ps.OpenedAt) > maxHoldDuration {
-		logger.Info().
-			Str("position_side", ps.Side).
-			Float64("entry_price", ps.EntryPrice).
-			Float64("current_price", currentPrice).
-			Dur("held_for", time.Since(ps.OpenedAt)).
-			Str("strategy", ps.Strategy).
-			Msg("max hold time reached — closing position")
-		e.executeCloseTrade(ctx, ps, currentPrice, "max hold time")
-		return
-	}
+	// Tick mode: use currentPrice for high, low, and close.
+	decision, shouldExit := risk.Evaluate(riskPos, currentPrice, currentPrice, currentPrice, time.Now())
 
-	// 2. Stop-loss check.
-	if ps.Side == "long" && currentPrice <= sl {
-		logger.Info().
-			Str("position_side", ps.Side).
-			Float64("entry_price", ps.EntryPrice).
-			Float64("current_price", currentPrice).
-			Float64("stop_loss", sl).
-			Str("strategy", ps.Strategy).
-			Msg("stop-loss hit — closing position")
-		e.executeCloseTrade(ctx, ps, currentPrice, "stop loss")
-		return
-	}
-	if ps.Side == "short" && currentPrice >= sl {
-		logger.Info().
-			Str("position_side", ps.Side).
-			Float64("entry_price", ps.EntryPrice).
-			Float64("current_price", currentPrice).
-			Float64("stop_loss", sl).
-			Str("strategy", ps.Strategy).
-			Msg("stop-loss hit — closing position")
-		e.executeCloseTrade(ctx, ps, currentPrice, "stop loss")
-		return
-	}
-
-	// 3. Take-profit check.
-	if ps.Side == "long" && currentPrice >= tp {
-		logger.Info().
-			Str("position_side", ps.Side).
-			Float64("entry_price", ps.EntryPrice).
-			Float64("current_price", currentPrice).
-			Float64("take_profit", tp).
-			Str("strategy", ps.Strategy).
-			Msg("take-profit hit — closing position")
-		e.executeCloseTrade(ctx, ps, currentPrice, "take profit")
-		return
-	}
-	if ps.Side == "short" && currentPrice <= tp {
-		logger.Info().
-			Str("position_side", ps.Side).
-			Float64("entry_price", ps.EntryPrice).
-			Float64("current_price", currentPrice).
-			Float64("take_profit", tp).
-			Str("strategy", ps.Strategy).
-			Msg("take-profit hit — closing position")
-		e.executeCloseTrade(ctx, ps, currentPrice, "take profit")
-		return
-	}
-
-	// 4. Trailing stop evaluation.
-	leverage := float64(ps.Leverage)
-	if leverage <= 0 {
-		leverage = 1
-	}
-	scale := 1.0 / leverage
-
-	var unrealisedPctRaw float64
-	if ps.Side == "long" {
-		unrealisedPctRaw = (currentPrice - ps.EntryPrice) / ps.EntryPrice * scale
-	} else {
-		unrealisedPctRaw = (ps.EntryPrice - currentPrice) / ps.EntryPrice * scale
-	}
-
-	updated := false
-	if unrealisedPctRaw >= trailingActivatePct {
-		peak := ps.PeakPrice
-		newTrailing := ps.TrailingStop
-
-		if ps.Side == "long" {
-			if currentPrice > peak {
-				peak = currentPrice
-				newTrailing = peak * (1 - trailingTrailPct)
-				updated = true
-			}
-		} else {
-			if peak == 0 || currentPrice < peak {
-				peak = currentPrice
-				newTrailing = peak * (1 + trailingTrailPct)
-				updated = true
-			}
-		}
-
-		if updated {
-			ps.PeakPrice = peak
-			ps.TrailingStop = newTrailing
-			e.posStateMu.Lock()
-			if existing, ok := e.posState[posKey(ps.AccountID, ps.Symbol)]; ok {
-				existing.PeakPrice = peak
-				existing.TrailingStop = newTrailing
-			}
+	if shouldExit {
+		// Guard against concurrent closes: set Closing flag under write lock.
+		e.posStateMu.Lock()
+		psInMap, exists := e.posState[posKey(ps.AccountID, ps.Symbol)]
+		if !exists || psInMap.Closing {
 			e.posStateMu.Unlock()
-			dbState := &store.EnginePositionState{
-				ID:           ps.ID,
-				AccountID:    ps.AccountID,
-				Symbol:       ps.Symbol,
-				MarketType:   ps.MarketType,
-				Side:         ps.Side,
-				EntryPrice:   ps.EntryPrice,
-				StopLoss:     ps.StopLoss,
-				TakeProfit:   ps.TakeProfit,
-				Leverage:     ps.Leverage,
-				Strategy:     ps.Strategy,
-				OpenedAt:     ps.OpenedAt,
-				PeakPrice:    peak,
-				TrailingStop: newTrailing,
-			}
-			if err := e.repo.UpdatePositionState(ctx, tenantID, dbState); err != nil {
-				logger.Warn().Err(err).Msg("failed to update position state trailing stop")
-			}
-			logger.Debug().Float64("peak", peak).Float64("trailing_stop", newTrailing).Msg("trailing stop updated")
+			return
 		}
+		psInMap.Closing = true
+		e.posStateMu.Unlock()
 
-		// Check if trailing stop is breached.
-		if ps.TrailingStop > 0 {
-			if ps.Side == "long" && currentPrice <= ps.TrailingStop {
-				logger.Info().
-					Str("position_side", ps.Side).
-					Float64("entry_price", ps.EntryPrice).
-					Float64("current_price", currentPrice).
-					Float64("trailing_stop", ps.TrailingStop).
-					Float64("peak_price", ps.PeakPrice).
-					Str("strategy", ps.Strategy).
-					Msg("trailing stop hit — closing position")
-				e.executeCloseTrade(ctx, ps, currentPrice, "trailing stop")
-				return
-			}
-			if ps.Side == "short" && currentPrice >= ps.TrailingStop {
-				logger.Info().
-					Str("position_side", ps.Side).
-					Float64("entry_price", ps.EntryPrice).
-					Float64("current_price", currentPrice).
-					Float64("trailing_stop", ps.TrailingStop).
-					Float64("peak_price", ps.PeakPrice).
-					Str("strategy", ps.Strategy).
-					Msg("trailing stop hit — closing position")
-				e.executeCloseTrade(ctx, ps, currentPrice, "trailing stop")
-				return
-			}
+		logger.Info().
+			Str("exit_reason", decision.ExitReason).
+			Int("layer", decision.Layer).
+			Str("strategy", ps.Strategy).
+			Str("position_side", ps.Side).
+			Float64("entry_price", ps.EntryPrice).
+			Msg("risk evaluation triggered exit")
+
+		e.executeCloseTrade(ctx, ps, currentPrice, decision.ExitReason)
+		return
+	}
+
+	// If trailing stop advanced, persist the updated state.
+	if riskPos.PeakPrice != oldPeak || riskPos.TrailingStop != oldTrail {
+		e.posStateMu.Lock()
+		if psInMap, exists := e.posState[posKey(ps.AccountID, ps.Symbol)]; exists {
+			psInMap.PeakPrice = riskPos.PeakPrice
+			psInMap.TrailingStop = riskPos.TrailingStop
+		}
+		e.posStateMu.Unlock()
+
+		dbState := &store.EnginePositionState{
+			ID:           ps.ID,
+			AccountID:    ps.AccountID,
+			Symbol:       ps.Symbol,
+			MarketType:   ps.MarketType,
+			PeakPrice:    riskPos.PeakPrice,
+			TrailingStop: riskPos.TrailingStop,
+		}
+		if err := e.repo.UpdatePositionState(ctx, tenantID, dbState); err != nil {
+			logger.Warn().Err(err).Msg("failed to persist trailing stop update")
+		} else {
+			logger.Debug().
+				Float64("peak_price", riskPos.PeakPrice).
+				Float64("trailing_stop", riskPos.TrailingStop).
+				Msg("trailing stop state advanced")
 		}
 	}
 }
-
-

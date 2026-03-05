@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
+	"github.com/Signal-ngn/risk"
 	"github.com/Signal-ngn/trader/internal/domain"
 	"github.com/Signal-ngn/trader/internal/store"
 )
@@ -234,16 +235,21 @@ func (e *Engine) handleOpenSignal(ctx context.Context, signal SignalPayload, pro
 	e.conflict[posKey(accountID, product)] = string(positionSide)
 	e.conflictMu.Unlock()
 
+	// Compute hard stop price at entry (circuit-breaker, immutable for lifetime of position).
+	hardStop := risk.ComputeHardStop(signal.Price, string(positionSide), leverage, string(marketType))
+
 	// Persist position state.
 	dbState := &store.EnginePositionState{
-		AccountID:  accountID,
-		Symbol:     product,
-		MarketType: string(marketType),
-		Side:       string(positionSide),
-		EntryPrice: signal.Price,
-		Leverage:   leverage,
-		Strategy:   strategy,
-		OpenedAt:   now,
+		AccountID:   accountID,
+		Symbol:      product,
+		MarketType:  string(marketType),
+		Side:        string(positionSide),
+		EntryPrice:  signal.Price,
+		HardStop:    hardStop,
+		Leverage:    leverage,
+		Strategy:    strategy,
+		Granularity: tc.Granularity,
+		OpenedAt:    now,
 	}
 	if sl != nil {
 		dbState.StopLoss = *sl
@@ -256,16 +262,18 @@ func (e *Engine) handleOpenSignal(ctx context.Context, signal SignalPayload, pro
 		logger.Error().Err(err).Msg("failed to persist position state")
 	} else {
 		ps := &PositionState{
-			AccountID:  dbState.AccountID,
-			Symbol:     dbState.Symbol,
-			MarketType: dbState.MarketType,
-			Side:       dbState.Side,
-			EntryPrice: dbState.EntryPrice,
-			StopLoss:   dbState.StopLoss,
-			TakeProfit: dbState.TakeProfit,
-			Leverage:   dbState.Leverage,
-			Strategy:   dbState.Strategy,
-			OpenedAt:   dbState.OpenedAt,
+			AccountID:   dbState.AccountID,
+			Symbol:      dbState.Symbol,
+			MarketType:  dbState.MarketType,
+			Side:        dbState.Side,
+			EntryPrice:  dbState.EntryPrice,
+			StopLoss:    dbState.StopLoss,
+			TakeProfit:  dbState.TakeProfit,
+			HardStop:    dbState.HardStop,
+			Leverage:    dbState.Leverage,
+			Strategy:    dbState.Strategy,
+			Granularity: dbState.Granularity,
+			OpenedAt:    dbState.OpenedAt,
 		}
 		e.posStateMu.Lock()
 		e.posState[posKey(accountID, product)] = ps
@@ -299,7 +307,12 @@ func (e *Engine) handleCloseSignal(ctx context.Context, signal SignalPayload, pr
 		Str("mode", e.cfg.TradingMode).
 		Msg("closing position on signal")
 
-	exitReason := "signal"
+	// Use the strategy-supplied reason if present; otherwise fall back to the
+	// canonical Layer 3 conviction-drop label.
+	exitReason := "Layer 3: conviction drop"
+	if signal.Reason != "" {
+		exitReason = signal.Reason
+	}
 	e.executeCloseTrade(ctx, ps, signal.Price, exitReason)
 }
 

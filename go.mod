@@ -16,6 +16,7 @@ require (
 )
 
 require (
+	github.com/Signal-ngn/risk v0.1.0 // indirect
 	github.com/clipperhouse/displaywidth v0.6.2 // indirect
 	github.com/clipperhouse/stringish v0.1.1 // indirect
 	github.com/clipperhouse/uax29/v2 v2.3.0 // indirect
@@ -48,3 +49,5 @@ require (
 	golang.org/x/sys v0.32.0 // indirect
 	golang.org/x/text v0.29.0 // indirect
 )
+
+replace github.com/Signal-ngn/risk => ../risk

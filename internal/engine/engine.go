@@ -30,11 +30,14 @@ type PositionState struct {
 	EntryPrice   float64
 	StopLoss     float64
 	TakeProfit   float64
+	HardStop     float64 // leverage-scaled circuit-breaker price; 0 = not yet set
 	Leverage     int
 	Strategy     string
+	Granularity  string    // candle granularity at entry time; "" = unknown
 	OpenedAt     time.Time
 	PeakPrice    float64
 	TrailingStop float64
+	Closing      bool // true when a close is already in-flight; prevents double-close
 }
 
 // posKey returns the map key for a (accountID, symbol) pair.
@@ -247,8 +250,10 @@ func (e *Engine) loadStartupState(ctx context.Context) error {
 				EntryPrice:   s.EntryPrice,
 				StopLoss:     s.StopLoss,
 				TakeProfit:   s.TakeProfit,
+				HardStop:     s.HardStop,
 				Leverage:     s.Leverage,
 				Strategy:     s.Strategy,
+				Granularity:  s.Granularity,
 				OpenedAt:     s.OpenedAt,
 				PeakPrice:    s.PeakPrice,
 				TrailingStop: s.TrailingStop,

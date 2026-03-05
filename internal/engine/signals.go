@@ -427,10 +427,13 @@ func (e *Engine) handleSignal(ctx context.Context, msg *nats.Msg) {
 	}
 
 	// Cache the signal price — used by the risk loop as current market price.
+	// Also trigger immediate risk evaluation for all open positions on this symbol
+	// (tick-level latency instead of waiting for the 30-second periodic ticker).
 	if signal.Price > 0 {
 		e.lastPriceMu.Lock()
 		e.lastPrice[product] = signal.Price
 		e.lastPriceMu.Unlock()
+		go e.evaluateOpenPositionsForSymbol(ctx, product)
 	}
 
 	// Build the set of accounts this signal targets.
