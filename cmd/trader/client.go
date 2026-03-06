@@ -88,6 +88,10 @@ func (c *Client) do(method, rawURL string, body any, out any) error {
 		return fmt.Errorf("read response: %w", err)
 	}
 
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("authentication failed — run `trader auth login` to refresh your API key")
+	}
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &apiError{StatusCode: resp.StatusCode, Body: string(respBytes)}
 	}
