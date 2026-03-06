@@ -1,4 +1,4 @@
-# github.com/Signal-ngn/risk v0.1.0 => ../risk
+# github.com/Signal-ngn/risk v0.1.0
 ## explicit; go 1.24
 github.com/Signal-ngn/risk
 # github.com/clipperhouse/displaywidth v0.6.2
@@ -194,4 +194,3 @@ golang.org/x/text/transform
 golang.org/x/text/unicode/bidi
 golang.org/x/text/unicode/norm
 golang.org/x/text/width
-# github.com/Signal-ngn/risk => ../risk
