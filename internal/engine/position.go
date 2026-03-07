@@ -357,16 +357,25 @@ func mapSignalToSide(action string, tc *TradingConfig) (domain.Side, domain.Posi
 }
 
 // calculatePositionSize returns (size, quantity, margin, error).
-// availableBalance, when non-nil, caps the position so it cannot exceed the
-// account's current funds: for spot the full size is capped; for futures the
-// margin (size/leverage) is capped and the notional size is scaled accordingly.
+// When availableBalance is non-nil and positive the position is sized as a
+// percentage of the live account balance (so POSITION_SIZE_PCT always means
+// "X % of what I actually have").  PortfolioSize is used only as a fallback
+// when no balance is available.  An additional hard cap ensures the position
+// never exceeds the available funds regardless of how the base was derived.
 func (e *Engine) calculatePositionSize(signal SignalPayload, tc *TradingConfig, marketType domain.MarketType, availableBalance *float64) (size, qty, margin float64, err error) {
 	pct := e.cfg.PositionSizePct
 	if signal.PositionPct > 0 {
 		pct = signal.PositionPct * 100 // signal uses 0–1 fraction
 	}
 
-	size = e.cfg.PortfolioSize * (pct / 100)
+	// Use live balance as the sizing base so POSITION_SIZE_PCT is applied to
+	// what the account actually holds.  Fall back to the configured
+	// PortfolioSize only when no balance record exists yet.
+	base := e.cfg.PortfolioSize
+	if availableBalance != nil && *availableBalance > 0 {
+		base = *availableBalance
+	}
+	size = base * (pct / 100)
 
 	// Clamp to [min, max] from config.
 	if e.cfg.MinPositionSize > 0 && size < e.cfg.MinPositionSize {

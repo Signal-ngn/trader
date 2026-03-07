@@ -176,10 +176,10 @@ func TestCalcSize_ZeroPriceError(t *testing.T) {
 	}
 }
 
-func TestCalcSize_SpotCappedToBalance(t *testing.T) {
+func TestCalcSize_SpotSizedFromBalance(t *testing.T) {
 	cfg := &config.Config{
-		PortfolioSize:   10000,
-		PositionSizePct: 50, // would give 5000, but balance is only 300
+		PortfolioSize:   10000, // ignored when balance is available
+		PositionSizePct: 50,    // 50 % of live balance ($300) = $150
 	}
 	e := makeEngine(cfg)
 	tc := &TradingConfig{LongLeverage: 1}
@@ -190,29 +190,29 @@ func TestCalcSize_SpotCappedToBalance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Capped to available balance
-	assertFloat(t, "size (capped to balance)", 300, size)
-	assertFloat(t, "qty", 300.0/50000, qty)
+	// size = 300 * 50% = 150 (not 10000*50% capped to 300)
+	assertFloat(t, "size (50% of balance)", 150, size)
+	assertFloat(t, "qty", 150.0/50000, qty)
 }
 
-func TestCalcSize_FuturesCappedToBalance(t *testing.T) {
+func TestCalcSize_FuturesSizedFromBalance(t *testing.T) {
 	cfg := &config.Config{
-		PortfolioSize:   10000,
-		PositionSizePct: 20, // would give 2000 notional, margin=500 at 4x
+		PortfolioSize:   10000, // ignored when balance is available
+		PositionSizePct: 20,    // 20 % of live balance ($200) = $40 notional; margin = 40/4 = $10
 	}
 	e := makeEngine(cfg)
 	tc := &TradingConfig{LongLeverage: 4}
 	signal := SignalPayload{Price: 50000}
-	bal := 200.0 // only $200 available; margin ($500) exceeds it
+	bal := 200.0
 
 	size, qty, margin, err := e.calculatePositionSize(signal, tc, domain.MarketTypeFutures, &bal)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// margin capped to $200; notional = 200*4 = 800
-	assertFloat(t, "margin (capped to balance)", 200, margin)
-	assertFloat(t, "size (scaled by leverage)", 800, size)
-	assertFloat(t, "qty", 800.0/50000, qty)
+	// base = $200 (balance), size = 200*20% = 40, margin = 40/4 = 10
+	assertFloat(t, "size (20% of balance)", 40, size)
+	assertFloat(t, "margin (size/leverage)", 10, margin)
+	assertFloat(t, "qty", 40.0/50000, qty)
 }
 
 func TestCalcSize_FuturesShortUsesShortLeverage(t *testing.T) {
