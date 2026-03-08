@@ -40,10 +40,11 @@ type Config struct {
 	TradingMode      string   // "paper" or "live"
 	TraderAccounts   []string // account IDs to trade under (empty = all tenant accounts)
 	StrategyFilter   string   // optional prefix filter for signal strategies
-	PortfolioSize    float64 // total portfolio size in USD
-	PositionSizePct  float64 // default position size as % of portfolio (0–100)
-	MaxPositionSize  float64 // max position size in USD (0 = no limit)
-	MinPositionSize  float64 // min position size in USD (0 = no minimum)
+	PortfolioSize       float64 // total portfolio size in USD (reference for scaling)
+	PositionSizePct     float64 // position size % applied at PortfolioSize balance (0–100)
+	PositionSizeMaxPct  float64 // position size % cap for small accounts (0 = disable progressive scaling)
+	MaxPositionSize     float64 // max position size in USD (0 = no limit)
+	MinPositionSize     float64 // min position size in USD (0 = no minimum)
 	MaxPositions     int     // max concurrent open positions (0 = no limit)
 	DailyLossLimit   float64 // max daily loss in USD before halting opens (0 = no limit)
 	KillSwitchFile   string  // path to kill switch file (default: /tmp/trader.kill)
@@ -78,10 +79,11 @@ func Load() (*Config, error) {
 		TradingMode:      getEnv("TRADING_MODE", "paper"),
 		TraderAccounts:   parseStringList(os.Getenv("TRADER_ACCOUNTS")),
 		StrategyFilter:   os.Getenv("STRATEGY_FILTER"),
-		PortfolioSize:    parseFloat(os.Getenv("PORTFOLIO_SIZE"), 10000),
-		PositionSizePct:  parseFloat(os.Getenv("POSITION_SIZE_PCT"), 10),
-		MaxPositionSize:  parseFloat(os.Getenv("MAX_POSITION_SIZE"), 0),
-		MinPositionSize:  parseFloat(os.Getenv("MIN_POSITION_SIZE"), 0),
+		PortfolioSize:      parseFloat(os.Getenv("PORTFOLIO_SIZE"), 10000),
+		PositionSizePct:    parseFloat(os.Getenv("POSITION_SIZE_PCT"), 10),
+		PositionSizeMaxPct: parseFloat(os.Getenv("POSITION_SIZE_MAX_PCT"), 0),
+		MaxPositionSize:    parseFloat(os.Getenv("MAX_POSITION_SIZE"), 0),
+		MinPositionSize:    parseFloat(os.Getenv("MIN_POSITION_SIZE"), 0),
 		MaxPositions:     parseInt(os.Getenv("MAX_POSITIONS"), 0),
 		DailyLossLimit:   parseFloat(os.Getenv("DAILY_LOSS_LIMIT"), 0),
 		KillSwitchFile:   getEnv("KILL_SWITCH_FILE", "/tmp/trader.kill"),

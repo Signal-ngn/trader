@@ -215,6 +215,83 @@ func TestCalcSize_FuturesSizedFromBalance(t *testing.T) {
 	assertFloat(t, "qty", 40.0/50000, qty)
 }
 
+// ── progressive PCT scaling ───────────────────────────────────────────────────
+
+func TestScaledPct_DisabledWhenMaxPctZero(t *testing.T) {
+	e := makeEngine(&config.Config{PortfolioSize: 10000, PositionSizePct: 10, PositionSizeMaxPct: 0})
+	// No progressive scaling → returns basePct unchanged.
+	got := e.scaledPct(10, 1000)
+	assertFloat(t, "pct (scaling disabled)", 10, got)
+}
+
+func TestScaledPct_AtSmallAccountAnchor(t *testing.T) {
+	// At portfolioSize/10 ($1,000) the pct should equal maxPct (20%).
+	e := makeEngine(&config.Config{PortfolioSize: 10000, PositionSizePct: 10, PositionSizeMaxPct: 20})
+	got := e.scaledPct(10, 1000)
+	assertFloat(t, "pct at $1k (20%)", 20, got)
+}
+
+func TestScaledPct_AtReferenceBalance(t *testing.T) {
+	// At portfolioSize ($10,000) the pct should equal basePct (10%).
+	e := makeEngine(&config.Config{PortfolioSize: 10000, PositionSizePct: 10, PositionSizeMaxPct: 20})
+	got := e.scaledPct(10, 10000)
+	assertFloat(t, "pct at $10k (10%)", 10, got)
+}
+
+func TestScaledPct_CappedAtMaxPctBelowAnchor(t *testing.T) {
+	// A very small balance should not exceed maxPct.
+	e := makeEngine(&config.Config{PortfolioSize: 10000, PositionSizePct: 10, PositionSizeMaxPct: 20})
+	got := e.scaledPct(10, 100) // $100 balance — would extrapolate above 20%
+	assertFloat(t, "pct capped at maxPct", 20, got)
+}
+
+func TestScaledPct_FlooredAtBasePctAbovePortfolioSize(t *testing.T) {
+	// A very large balance should not drop below basePct.
+	e := makeEngine(&config.Config{PortfolioSize: 10000, PositionSizePct: 10, PositionSizeMaxPct: 20})
+	got := e.scaledPct(10, 100000) // $100k balance
+	assertFloat(t, "pct floored at basePct", 10, got)
+}
+
+func TestCalcSize_ProgressiveScalingAt1k(t *testing.T) {
+	// End-to-end: $1,000 account, maxPct=20 → $200 trade size.
+	cfg := &config.Config{
+		PortfolioSize:      10000,
+		PositionSizePct:    10,
+		PositionSizeMaxPct: 20,
+	}
+	e := makeEngine(cfg)
+	tc := &TradingConfig{LongLeverage: 1}
+	signal := SignalPayload{Price: 50000}
+	bal := 1000.0
+
+	size, qty, _, err := e.calculatePositionSize(signal, tc, domain.MarketTypeSpot, &bal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFloat(t, "size ($1k account → 20% → $200)", 200, size)
+	assertFloat(t, "qty", 200.0/50000, qty)
+}
+
+func TestCalcSize_ProgressiveScalingSignalOverrideSkipsScaling(t *testing.T) {
+	// Signal-provided PositionPct bypasses progressive scaling.
+	cfg := &config.Config{
+		PortfolioSize:      10000,
+		PositionSizePct:    10,
+		PositionSizeMaxPct: 20,
+	}
+	e := makeEngine(cfg)
+	tc := &TradingConfig{LongLeverage: 1}
+	signal := SignalPayload{Price: 50000, PositionPct: 0.05} // 5% explicit
+	bal := 1000.0
+
+	size, _, _, err := e.calculatePositionSize(signal, tc, domain.MarketTypeSpot, &bal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 5% of $1,000 = $50 (signal override, no scaling applied)
+	assertFloat(t, "size (signal override 5%)", 50, size)
+}
+
 func TestCalcSize_FuturesShortUsesShortLeverage(t *testing.T) {
 	cfg := &config.Config{PortfolioSize: 10000, PositionSizePct: 10}
 	e := makeEngine(cfg)

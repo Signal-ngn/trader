@@ -61,7 +61,7 @@ steps:
       - --port=8080
       - --allow-unauthenticated
       - --add-cloudsql-instances=${_CLOUDSQL_INSTANCE}
-      - --set-env-vars=ENVIRONMENT=production,LOG_LEVEL=info,CLOUDSQL_INSTANCE=${_CLOUDSQL_INSTANCE},DB_NAME=spot_canvas,DB_USER=spot,ENFORCE_AUTH=true,TRADING_ENABLED=true,TRADING_MODE=paper,SN_API_URL=https://signalngn-api-potbdcvufa-ew.a.run.app,PORTFOLIO_SIZE=10000,POSITION_SIZE_PCT=10
+      - --set-env-vars=ENVIRONMENT=production,LOG_LEVEL=info,CLOUDSQL_INSTANCE=${_CLOUDSQL_INSTANCE},DB_NAME=spot_canvas,DB_USER=spot,ENFORCE_AUTH=true,TRADING_ENABLED=true,TRADING_MODE=paper,SN_API_URL=https://signalngn-api-potbdcvufa-ew.a.run.app,PORTFOLIO_SIZE=10000,POSITION_SIZE_PCT=10,POSITION_SIZE_MAX_PCT=20,MIN_POSITION_SIZE=50
       - --set-secrets=DB_PASSWORD=signalngn-prod-db-password:latest,NATS_URLS=signalngn-prod-nats-url:latest,NATS_CREDS=signalngn-prod-nats-creds:latest,SN_API_KEY=signalngn-prod-sn-api-key:latest
     waitFor:
       - push

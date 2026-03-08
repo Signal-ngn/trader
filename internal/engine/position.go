@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -356,25 +357,68 @@ func mapSignalToSide(action string, tc *TradingConfig) (domain.Side, domain.Posi
 	}
 }
 
-// calculatePositionSize returns (size, quantity, margin, error).
-// When availableBalance is non-nil and positive the position is sized as a
-// percentage of the live account balance (so POSITION_SIZE_PCT always means
-// "X % of what I actually have").  PortfolioSize is used only as a fallback
-// when no balance is available.  An additional hard cap ensures the position
-// never exceeds the available funds regardless of how the base was derived.
-func (e *Engine) calculatePositionSize(signal SignalPayload, tc *TradingConfig, marketType domain.MarketType, availableBalance *float64) (size, qty, margin float64, err error) {
-	pct := e.cfg.PositionSizePct
-	if signal.PositionPct > 0 {
-		pct = signal.PositionPct * 100 // signal uses 0–1 fraction
+// scaledPct returns an effective position percentage that scales progressively
+// with the account balance using a power-law curve.
+//
+// Two anchors define the curve:
+//   - At PortfolioSize        → PositionSizePct  (the "full-size" floor)
+//   - At PortfolioSize / 10   → PositionSizeMaxPct (the small-account cap)
+//
+// Between the anchors the formula is:
+//
+//	pct = basePct × (portfolioSize / balance)^k
+//	k   = log(maxPct / basePct) / log(10)
+//
+// Progressive scaling is disabled (returns basePct) when PositionSizeMaxPct is
+// zero or not greater than basePct.
+func (e *Engine) scaledPct(basePct, balance float64) float64 {
+	maxPct := e.cfg.PositionSizeMaxPct
+	portfolioSize := e.cfg.PortfolioSize
+
+	if maxPct <= basePct || portfolioSize <= 0 || balance <= 0 {
+		return basePct
 	}
 
-	// Use live balance as the sizing base so POSITION_SIZE_PCT is applied to
-	// what the account actually holds.  Fall back to the configured
-	// PortfolioSize only when no balance record exists yet.
+	k := math.Log(maxPct/basePct) / math.Log(10)
+	pct := basePct * math.Pow(portfolioSize/balance, k)
+
+	// Floor at basePct for accounts at or above the reference size.
+	if pct < basePct {
+		pct = basePct
+	}
+	// Cap at maxPct for accounts well below the reference size.
+	if pct > maxPct {
+		pct = maxPct
+	}
+	return pct
+}
+
+// calculatePositionSize returns (size, quantity, margin, error).
+//
+// Sizing logic (in order):
+//  1. Base: live account balance when available; PortfolioSize as fallback.
+//  2. Percentage: progressively scaled from PositionSizePct (at PortfolioSize)
+//     up to PositionSizeMaxPct (at PortfolioSize/10) for small accounts.
+//     Signal-provided PositionPct overrides the config PCT directly (no scaling).
+//  3. Clamp: applied against [MinPositionSize, MaxPositionSize] when set.
+//  4. Hard cap: position never exceeds available balance.
+func (e *Engine) calculatePositionSize(signal SignalPayload, tc *TradingConfig, marketType domain.MarketType, availableBalance *float64) (size, qty, margin float64, err error) {
+	// Use live balance as the sizing base so PCT is applied to what the account
+	// actually holds.  Fall back to PortfolioSize only when no balance record exists.
 	base := e.cfg.PortfolioSize
 	if availableBalance != nil && *availableBalance > 0 {
 		base = *availableBalance
 	}
+
+	var pct float64
+	if signal.PositionPct > 0 {
+		// Explicit signal override — honour as-is, no progressive scaling.
+		pct = signal.PositionPct * 100 // signal uses 0–1 fraction
+	} else {
+		// Apply progressive scaling: higher % for small accounts, lower for large.
+		pct = e.scaledPct(e.cfg.PositionSizePct, base)
+	}
+
 	size = base * (pct / 100)
 
 	// Clamp to [min, max] from config.
