@@ -64,6 +64,34 @@ func (e *Engine) processSignal(ctx context.Context, signal SignalPayload, produc
 		}
 	}
 
+	// Apply per-account confidence threshold from StrategyParams.
+	// The ingestion server publishes signals using the most permissive threshold
+	// across all accounts (so no trader misses a signal). Each trader engine is
+	// responsible for enforcing its own configured threshold here.
+	baseName := signalBaseName(strategy)
+	if params, ok := tradingConfig.StrategyParams[baseName]; ok {
+		switch signal.Action {
+		case "BUY", "SHORT":
+			if thresh, ok := params["confidence"]; ok && signal.Confidence < thresh {
+				logger.Debug().
+					Str("strategy", strategy).
+					Float64("confidence", signal.Confidence).
+					Float64("threshold", thresh).
+					Msg("signal below account confidence threshold, skipping")
+				return
+			}
+		case "SELL", "COVER":
+			if thresh, ok := params["exit_confidence"]; ok && signal.Confidence > 0 && signal.Confidence < thresh {
+				logger.Debug().
+					Str("strategy", strategy).
+					Float64("confidence", signal.Confidence).
+					Float64("exit_threshold", thresh).
+					Msg("exit signal below account exit_confidence threshold, skipping")
+				return
+			}
+		}
+	}
+
 	switch signal.Action {
 	case "BUY", "SHORT":
 		e.handleOpenSignal(ctx, signal, product, strategy, accountID, tradingConfig)
@@ -72,6 +100,19 @@ func (e *Engine) processSignal(ctx context.Context, signal SignalPayload, produc
 	default:
 		logger.Warn().Str("action", signal.Action).Msg("unknown signal action, skipping")
 	}
+}
+
+// signalBaseName strips direction suffixes (_short, _long) from a strategy name
+// to find the base name used as a key in StrategyParams.
+// e.g. "ml_transformer_1h_short" → "ml_transformer_1h"
+//      "ml_transformer_1h"       → "ml_transformer_1h"
+func signalBaseName(strategy string) string {
+	for _, suffix := range []string{"_short", "_long"} {
+		if strings.HasSuffix(strategy, suffix) {
+			return strategy[:len(strategy)-len(suffix)]
+		}
+	}
+	return strategy
 }
 
 // handleOpenSignal handles BUY and SHORT signals for a specific account.
