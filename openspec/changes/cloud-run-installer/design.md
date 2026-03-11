@@ -43,13 +43,13 @@ The trader image is already published to Signal ngn's Artifact Registry. Tenants
 
 ---
 
-### 3. Cloud SQL Postgres (db-f1-micro) per tenant
+### 3. No tenant-local database — platform API is the store
 
-**Decision**: Each tenant gets their own Cloud SQL Postgres instance, smallest tier.
+**Decision**: The trader engine has no local database. All trade records and position state are stored in the platform PostgreSQL (Signal ngn's DB) via the platform API (`POST /api/v1/trades`, `GET /api/v1/accounts/{id}/portfolio`). The installer provisions no Cloud SQL instance.
 
-**Rationale**: The trader's SQLite/Postgres ledger is per-instance. Shared DB would couple tenants. `db-f1-micro` costs ~$7/month — acceptable for a dedicated trading node. The trader runs migrations on startup, so no separate migration step is needed.
+**Rationale**: The `ledger-rest-ingest` change in spot-canvas-app makes the platform API the single source of truth for all trade and position data. Eliminating Cloud SQL removes ~$7/month cost, significant provisioning complexity (5–10 min setup, IAM roles, VPC peering), and a whole class of DB migration concerns from the tenant install.
 
-**Alternative considered**: SQLite via a mounted Cloud Storage FUSE volume — rejected because Cloud Run's stateless nature makes persistent volume management complex and unreliable.
+**Alternative considered**: Cloud SQL Postgres per tenant (`db-f1-micro`) — rejected because it duplicates trade/position storage with the platform DB, requiring dual-write and FIFO logic in two places. See `ledger-rest-ingest` design for full rationale.
 
 ---
 
@@ -103,25 +103,23 @@ No `roles/editor` or `roles/owner`.
 2.  Collect inputs:
       - GCP Project ID (validate exists + billing enabled)
       - Region (default: europe-west1)
-      - Path to NATS .creds file (downloaded from spot-canvas-app)
+      - Path to NATS .creds file (subscribe-only, downloaded from spot-canvas-app)
       - SN API Key (paste from spot-canvas-app)
       - Trader account name (default: "main")
       - Portfolio size USD (default: 10000)
 3.  Enable required GCP APIs:
-      compute, run, sqladmin, secretmanager, artifactregistry
-4.  Create service account (trader-sa) + bind IAM roles
+      compute, run, secretmanager, artifactregistry
+4.  Create service account (trader-sa) + bind IAM roles:
+      - roles/secretmanager.secretAccessor only
 5.  Reserve static external IP address (trader-nat-ip)
 6.  Create Cloud Router + Cloud NAT
-7.  Create Cloud SQL Postgres instance (db-f1-micro)
-8.  Create database + user inside Cloud SQL
-9.  Create Secret Manager secrets:
-      - trader-db-password (random 32-char)
+7.  Create Secret Manager secrets:
       - trader-nats-creds (content of .creds file)
       - trader-sn-api-key (from input)
-10. Grant service account access to secrets
-11. Deploy Cloud Run service (--allow-unauthenticated, VPC egress, secret mounts)
-12. Wait for service health check to pass
-13. Print summary:
+8.  Grant service account access to secrets
+9.  Deploy Cloud Run service (--allow-unauthenticated, VPC egress, secret mounts)
+10. Wait for service health check to pass
+11. Print summary:
       - Service URL
       - Static egress IP (with note to whitelist with broker)
       - Command to tail logs
@@ -130,11 +128,10 @@ No `roles/editor` or `roles/owner`.
 
 ## Risks / Trade-offs
 
-- **Cloud SQL cold start** → Cloud SQL provisioning takes 5–10 min. Script waits with a spinner. Mitigation: clear messaging so tenant doesn't think it hung.
+- **Platform API dependency** → The trader engine has no local DB; if the Signal ngn platform API is unreachable the engine cannot confirm position state. Mitigation: engine caches last-known positions in memory and continues with stale state, logging a warning. This is an accepted trade-off — the installer is for the Signal ngn platform ecosystem; the platform API is a hard dependency by design.
 - **Artifact Registry access** → If Signal ngn restricts the registry to authenticated pulls in future, tenants would need a pull secret or a separate image hosting strategy. Mitigation: document the image source; keep public access for the tenant image.
 - **NATS creds file on tenant disk** → After the install the file is no longer needed locally (it's in Secret Manager), but it exists on the tenant's machine. Mitigation: script offers to `shred` the local file after upload, and documents this in the install guide.
-- **Region constraints** → Cloud SQL and Cloud Run must be in the same region for direct VPC connectivity. Script enforces single-region selection and uses it for all resources.
-- **Script idempotency gaps** → Some `gcloud` operations (e.g., `create database`) aren't idempotent by default. Script wraps each step in an existence check. Mitigation: test re-run scenarios explicitly.
+- **Script idempotency gaps** → Some `gcloud` operations aren't idempotent by default. Script wraps each step in an existence check. Mitigation: test re-run scenarios explicitly.
 
 ## Migration Plan
 
@@ -143,10 +140,11 @@ No migration needed — this is entirely new tooling. Deployment steps:
 1. Add scripts to repo under `scripts/`
 2. Add `docs/tenant-install.md`
 3. Signal ngn team ensures Artifact Registry repo has public read access for the trader image
-4. Signal ngn team documents the NATS creds issuance flow in spot-canvas-app (out of scope for this change)
+4. `ledger-rest-ingest` change in spot-canvas-app must be deployed before tenants install — the trader engine depends on `POST /api/v1/trades` and `GET /api/v1/accounts/{id}/portfolio` being available on the platform API
 
 ## Open Questions
 
 - ~~Static IP needed?~~ Yes — confirmed.
+- ~~Cloud SQL needed?~~ No — platform API is the store (see `ledger-rest-ingest`).
 - Should the script support `--non-interactive` / flag-driven mode for automated provisioning? (Not in scope for v1, but the input-collection step should be structured to make this easy to add.)
 - What image tag should tenants pin to — `latest` or a specific release tag? For v1 use `latest`; a future change can add versioned release management.
