@@ -263,3 +263,79 @@ func TestSignalStale_OldRejected(t *testing.T) {
 		t.Fatalf("expected stale signal, age was only %v", age)
 	}
 }
+
+// ── exit_confidence gate (IsExit bypass) ─────────────────────────────────────
+//
+// ML strategies self-govern exit confidence server-side. When is_exit=true the
+// ingestion server has already passed the signal through its own threshold, so
+// the engine must NOT apply a second exit_confidence filter.
+
+// shouldDropExitSignal mirrors the gate logic in processSignal so the
+// decision can be tested independently of the full engine setup.
+func shouldDropExitSignal(signal SignalPayload, params map[string]float64) bool {
+	if signal.IsExit {
+		return false // bypass — strategy already self-governed the threshold
+	}
+	thresh, ok := params["exit_confidence"]
+	if !ok {
+		return false
+	}
+	return signal.Confidence > 0 && signal.Confidence < thresh
+}
+
+func TestExitConfidenceGate_IsExitTrue_AlwaysPasses(t *testing.T) {
+	// Confidence 0.44 is well below the 0.60 exit_confidence threshold, but
+	// is_exit=true means the strategy already applied its own filter — the engine
+	// must let it through. This is the exact scenario that caused SHIB-USD to
+	// be held until the time exit instead of being closed by the strategy signal.
+	signal := SignalPayload{Action: "SELL", Confidence: 0.44, IsExit: true}
+	params := map[string]float64{"exit_confidence": 0.60}
+	if shouldDropExitSignal(signal, params) {
+		t.Fatal("IsExit=true signal must not be dropped regardless of confidence")
+	}
+}
+
+func TestExitConfidenceGate_IsExitFalse_BelowThreshold_Dropped(t *testing.T) {
+	// A non-exit SELL (e.g. manual override without is_exit) below the threshold
+	// should still be filtered.
+	signal := SignalPayload{Action: "SELL", Confidence: 0.44, IsExit: false}
+	params := map[string]float64{"exit_confidence": 0.60}
+	if !shouldDropExitSignal(signal, params) {
+		t.Fatal("IsExit=false signal below exit_confidence threshold should be dropped")
+	}
+}
+
+func TestExitConfidenceGate_IsExitFalse_AboveThreshold_Passes(t *testing.T) {
+	signal := SignalPayload{Action: "SELL", Confidence: 0.65, IsExit: false}
+	params := map[string]float64{"exit_confidence": 0.60}
+	if shouldDropExitSignal(signal, params) {
+		t.Fatal("IsExit=false signal above exit_confidence threshold should pass")
+	}
+}
+
+func TestExitConfidenceGate_IsExitFalse_ExactlyAtThreshold_Passes(t *testing.T) {
+	signal := SignalPayload{Action: "SELL", Confidence: 0.60, IsExit: false}
+	params := map[string]float64{"exit_confidence": 0.60}
+	if shouldDropExitSignal(signal, params) {
+		t.Fatal("confidence exactly at exit_confidence threshold should pass")
+	}
+}
+
+func TestExitConfidenceGate_NoExitConfidenceParam_Passes(t *testing.T) {
+	// No exit_confidence key in params — gate should be a no-op.
+	signal := SignalPayload{Action: "SELL", Confidence: 0.30, IsExit: false}
+	params := map[string]float64{"confidence": 0.60}
+	if shouldDropExitSignal(signal, params) {
+		t.Fatal("missing exit_confidence param should not drop the signal")
+	}
+}
+
+func TestExitConfidenceGate_ZeroConfidence_NotFiltered(t *testing.T) {
+	// Confidence=0 means "not set" — the gate skips signals with zero confidence
+	// to avoid dropping signals from strategies that don't emit a confidence score.
+	signal := SignalPayload{Action: "SELL", Confidence: 0, IsExit: false}
+	params := map[string]float64{"exit_confidence": 0.60}
+	if shouldDropExitSignal(signal, params) {
+		t.Fatal("zero confidence should not be filtered by exit_confidence gate")
+	}
+}
