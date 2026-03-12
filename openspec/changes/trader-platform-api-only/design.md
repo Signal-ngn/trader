@@ -93,12 +93,7 @@ engine-state/
 
 **Decision:** On engine startup, `LoadPositionStates` (or a new `HydrateFromPortfolio` method) calls `GET /api/v1/accounts/{id}/portfolio`, maps open positions to `EnginePositionState` entries using stored `stop_loss`, `take_profit`, `leverage`, and `entry_price` fields, and seeds the in-memory map.
 
-**Risk state recovery:** Fields like `trailing_stop`, `peak_price`, and `hard_stop` are engine-computed and not stored on the platform. After a cold restart these default to zero / the entry price. This means:
-- Trailing stop resets to the original stop-loss level (conservative — acceptable)
-- Hard stop is re-computed on the next candle tick
-- Peak price resets to entry price (trailing will re-engage once price moves)
-
-This is an accepted trade-off for removing the DB dependency.
+**Risk state recovery:** All risk fields — `stop_loss`, `take_profit`, `hard_stop`, `trailing_stop`, `peak_price`, `leverage`, `strategy`, `granularity`, `opened_at` — are persisted in Firestore (decision 3). On startup `LoadPositionStates` reads the Firestore `positions` sub-collection and fully reconstructs the in-memory risk map. No risk state is lost across restarts.
 
 ---
 
