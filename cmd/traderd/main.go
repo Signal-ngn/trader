@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"cloud.google.com/go/firestore"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -17,6 +18,7 @@ import (
 	"github.com/Signal-ngn/trader/internal/config"
 	"github.com/Signal-ngn/trader/internal/engine"
 	"github.com/Signal-ngn/trader/internal/ingest"
+	"github.com/Signal-ngn/trader/internal/platform"
 	"github.com/Signal-ngn/trader/internal/store"
 )
 
@@ -108,9 +110,31 @@ func main() {
 		}
 	}()
 
-	// Start trading engine when enabled — runs after DB is ready.
+	// Start trading engine when enabled — uses platform API + Firestore, no DB.
 	if cfg.TradingEnabled {
-		eng := engine.New(cfg, repo, srv.StreamRegistry())
+		if cfg.SNAPIKey == "" {
+			log.Fatal().Msg("SN_API_KEY is required when TRADING_ENABLED=true")
+		}
+		if cfg.FirestoreProjectID == "" {
+			log.Fatal().Msg("FIRESTORE_PROJECT_ID is required when TRADING_ENABLED=true")
+		}
+
+		// Construct platform client.
+		platformClient := platform.New(cfg.TraderAPIURL, cfg.SNAPIKey)
+
+		// Construct Firestore client using Application Default Credentials (ADC).
+		// On Cloud Run the trader service account (roles/datastore.user) is picked
+		// up automatically — no explicit credentials file needed.
+		firestoreClient, err := firestore.NewClient(ctx, cfg.FirestoreProjectID)
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to create Firestore client")
+		}
+		defer firestoreClient.Close()
+
+		// Construct the API-backed engine store.
+		apiStore := engine.NewAPIEngineStore(platformClient, firestoreClient, cfg)
+
+		eng := engine.New(cfg, apiStore, srv.StreamRegistry())
 		go func() {
 			if err := eng.Start(ctx); err != nil {
 				log.Error().Err(err).Msg("trading engine error")

@@ -14,10 +14,9 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
-	"github.com/Signal-ngn/trader/internal/api/middleware"
 	"github.com/Signal-ngn/trader/internal/config"
 	"github.com/Signal-ngn/trader/internal/ingest"
-	"github.com/Signal-ngn/trader/internal/store"
+	"github.com/Signal-ngn/trader/internal/platform"
 )
 
 // PositionState holds the in-memory risk metadata for a single open position.
@@ -54,7 +53,7 @@ type cooldownKey struct {
 // and manages positions based on those signals and risk rules.
 type Engine struct {
 	cfg      *config.Config
-	repo     *store.Repository
+	repo     EngineStore
 	exchange Exchange
 
 	// tenantUUID is resolved once at Start from the SN API key.
@@ -100,7 +99,7 @@ type Engine struct {
 
 // New creates a new Engine. The Exchange is selected based on cfg.TradingMode.
 // publisher may be nil; when set, every filled trade is fanned out to SSE subscribers.
-func New(cfg *config.Config, repo *store.Repository, publisher ingest.TradePublisher) *Engine {
+func New(cfg *config.Config, repo EngineStore, publisher ingest.TradePublisher) *Engine {
 	var ex Exchange
 	if cfg.TradingMode == "live" {
 		ex = NewBinanceFuturesExchange(cfg)
@@ -124,28 +123,29 @@ func New(cfg *config.Config, repo *store.Repository, publisher ingest.TradePubli
 // Start initialises the engine and runs the signal and risk loops.
 // It blocks until ctx is cancelled.
 func (e *Engine) Start(ctx context.Context) error {
-	// Resolve tenant from the SN API key (same key used to authenticate to the
-	// trader service). Falls back to the middleware default tenant.
-	if e.cfg.SNAPIKey != "" {
-		apiKey, err := uuid.Parse(e.cfg.SNAPIKey)
-		if err == nil {
-			userRepo := store.NewUserRepository(e.repo.Pool())
-			user, err := userRepo.GetByAPIKey(ctx, apiKey)
-			if err != nil {
-				e.logger.Warn().Err(err).Msg("could not resolve tenant from SN_API_KEY, using default")
-			} else if user != nil {
-				e.tenantUUID = user.TenantID
-				e.logger.Info().Str("tenant_id", e.tenantUUID.String()).Msg("resolved tenant from SN_API_KEY")
-			}
-		}
-	}
-	if e.tenantUUID == uuid.Nil {
-		e.tenantUUID = middleware.DefaultTenantID
-		e.logger.Warn().Str("tenant_id", e.tenantUUID.String()).Msg("using default tenant — set SN_API_KEY to resolve the real tenant")
+	// Require SN API key upfront — needed for both auth resolution and platform calls.
+	if e.cfg.SNAPIKey == "" {
+		e.logger.Error().Msg("SN_API_KEY is required when TRADING_ENABLED=true — engine aborted")
+		return nil
 	}
 
+	// Resolve tenant ID via the platform API (GET /auth/resolve).
+	platformClient := platform.New(e.cfg.TraderAPIURL, e.cfg.SNAPIKey)
+	tenantIDStr, err := platformClient.ResolveAuth(ctx)
+	if err != nil {
+		e.logger.Error().Err(err).Msg("failed to resolve tenant from platform API — engine aborted")
+		return nil
+	}
+	tenantUUID, err := uuid.Parse(tenantIDStr)
+	if err != nil {
+		e.logger.Error().Err(err).Str("tenant_id", tenantIDStr).Msg("platform returned invalid tenant_id UUID — engine aborted")
+		return nil
+	}
+	e.tenantUUID = tenantUUID
+	e.logger.Info().Str("tenant_id", e.tenantUUID.String()).Msg("resolved tenant from platform API")
+
 	// Resolve the account list: use cfg.TraderAccounts if set, otherwise load
-	// all accounts for the tenant from the DB.
+	// all accounts for the tenant from the platform API.
 	if len(e.cfg.TraderAccounts) > 0 {
 		e.accounts = e.cfg.TraderAccounts
 	} else {
@@ -179,12 +179,6 @@ func (e *Engine) Start(ctx context.Context) error {
 			return nil
 		}
 		e.logger.Info().Msg("Binance credentials validated")
-	}
-
-	// Require SN API key.
-	if e.cfg.SNAPIKey == "" {
-		e.logger.Error().Msg("SN_API_KEY is required when TRADING_ENABLED=true — engine aborted")
-		return nil
 	}
 
 	// Fetch initial allowlist.
@@ -234,13 +228,13 @@ func (e *Engine) loadStartupState(ctx context.Context) error {
 		e.conflictMu.Unlock()
 		totalPositions += len(openPositions)
 
-		// Load engine_position_state rows.
-		dbStates, err := e.repo.LoadPositionStates(ctx, accountID)
+		// Load position states (from Firestore via EngineStore).
+		posStates, err := e.repo.LoadPositionStates(ctx, accountID)
 		if err != nil {
 			return fmt.Errorf("load position states for %s: %w", accountID, err)
 		}
 		e.posStateMu.Lock()
-		for _, s := range dbStates {
+		for _, s := range posStates {
 			ps := &PositionState{
 				ID:           s.ID,
 				AccountID:    s.AccountID,
@@ -261,7 +255,7 @@ func (e *Engine) loadStartupState(ctx context.Context) error {
 			e.posState[posKey(accountID, s.Symbol)] = ps
 		}
 		e.posStateMu.Unlock()
-		totalStates += len(dbStates)
+		totalStates += len(posStates)
 	}
 
 	e.logger.Info().

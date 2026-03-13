@@ -48,8 +48,10 @@ type Config struct {
 	MaxPositions     int     // max concurrent open positions (0 = no limit)
 	DailyLossLimit   float64 // max daily loss in USD before halting opens (0 = no limit)
 	KillSwitchFile   string  // path to kill switch file (default: /tmp/trader.kill)
-	SNAPIKey         string  // SignalNGN API key
-	SNAPIURL         string  // SignalNGN API base URL
+	SNAPIKey            string  // SignalNGN API key
+	SNAPIURL            string  // SignalNGN API base URL (deprecated alias, use TraderAPIURL)
+	TraderAPIURL        string  // Signal ngn platform API base URL
+	FirestoreProjectID  string  // GCP project ID for Firestore (required when TRADING_ENABLED=true)
 	SNNATSCredsFile  string  // path to NGS NATS credentials file (optional)
 	BinanceAPIKey    string  // Binance API key (live mode only)
 	BinanceAPISecret string  // Binance API secret (live mode only)
@@ -87,8 +89,10 @@ func Load() (*Config, error) {
 		MaxPositions:     parseInt(os.Getenv("MAX_POSITIONS"), 0),
 		DailyLossLimit:   parseFloat(os.Getenv("DAILY_LOSS_LIMIT"), 0),
 		KillSwitchFile:   getEnv("KILL_SWITCH_FILE", "/tmp/trader.kill"),
-		SNAPIKey:         os.Getenv("SN_API_KEY"),
-		SNAPIURL:         getEnv("SN_API_URL", "https://api.signal-ngn.com"),
+		SNAPIKey:           os.Getenv("SN_API_KEY"),
+		SNAPIURL:           getEnv("SN_API_URL", "https://api.signal-ngn.com"),
+		TraderAPIURL:       getEnv("TRADER_API_URL", "https://signalngn-api-potbdcvufa-ew.a.run.app"),
+		FirestoreProjectID: os.Getenv("FIRESTORE_PROJECT_ID"),
 		SNNATSCredsFile:  os.Getenv("SN_NATS_CREDS_FILE"),
 		BinanceAPIKey:    os.Getenv("BINANCE_API_KEY"),
 		BinanceAPISecret: os.Getenv("BINANCE_API_SECRET"),

@@ -13,7 +13,6 @@ import (
 
 	"github.com/Signal-ngn/risk"
 	"github.com/Signal-ngn/trader/internal/domain"
-	"github.com/Signal-ngn/trader/internal/store"
 )
 
 // processSignal routes a signal to the position engine for a specific account.
@@ -315,7 +314,7 @@ func (e *Engine) handleOpenSignal(ctx context.Context, signal SignalPayload, pro
 	hardStop := risk.ComputeHardStop(signal.Price, string(positionSide), leverage, string(marketType))
 
 	// Persist position state.
-	dbState := &store.EnginePositionState{
+	dbState := &EnginePositionState{
 		AccountID:   accountID,
 		Symbol:      product,
 		MarketType:  string(marketType),
@@ -701,7 +700,7 @@ func (e *Engine) executeCloseTrade(ctx context.Context, ps *PositionState, curre
 	if err != nil {
 		logger.Warn().Err(err).Msg("failed to get avg entry price")
 	}
-	store.CostBasisForTrade(trade, avgEntry)
+	costBasisForTrade(trade, avgEntry)
 
 	_, err = e.repo.InsertTradeAndUpdatePosition(ctx, tenantID, trade)
 	if err != nil {
@@ -755,13 +754,13 @@ func (e *Engine) killSwitchActive() bool {
 	return err == nil
 }
 
-// isDailyLossLimitReached queries the DB for realised P&L since midnight UTC
-// and returns true when total losses exceed cfg.DailyLossLimit.
+// isDailyLossLimitReached reads today's realised P&L from Firestore (via the
+// EngineStore) and returns true when total losses exceed cfg.DailyLossLimit.
 //
-// Using the DB (rather than an in-memory counter) means:
+// Using Firestore (rather than an in-memory counter) means:
 //   - The limit survives engine restarts.
-//   - Trades closed by the risk loop, by a signal, or recorded manually via the
-//     API all count toward the limit — not just opens executed by this goroutine.
+//   - Daily P&L is atomically incremented after each close, so concurrent writes
+//     are safe and no increments are lost.
 func (e *Engine) isDailyLossLimitReached(ctx context.Context, accountID string) bool {
 	pnl, err := e.repo.DailyRealizedPnL(ctx, accountID)
 	if err != nil {

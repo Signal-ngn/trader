@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/Signal-ngn/risk"
-	"github.com/Signal-ngn/trader/internal/store"
 )
 
 const (
@@ -215,7 +214,7 @@ func (e *Engine) evaluatePosition(ctx context.Context, ps *PositionState) {
 		}
 		e.posStateMu.Unlock()
 
-		dbState := &store.EnginePositionState{
+		dbState := &EnginePositionState{
 			ID:           ps.ID,
 			AccountID:    ps.AccountID,
 			Symbol:       ps.Symbol,
