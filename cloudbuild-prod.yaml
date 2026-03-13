@@ -61,6 +61,10 @@ steps:
       - --timeout=3600s
       - --port=8080
       - --allow-unauthenticated
+      # Route all egress through the default VPC so Cloud NAT gives us a static IP.
+      - --network=default
+      - --subnet=default
+      - --vpc-egress=all-traffic
       - --set-env-vars=ENVIRONMENT=production,LOG_LEVEL=info,ENFORCE_AUTH=true,TRADING_ENABLED=true,TRADING_MODE=paper,TENANT_ID=${_TENANT_ID},TRADER_ACCOUNTS=${_TRADER_ACCOUNTS},FIRESTORE_PROJECT_ID=${PROJECT_ID},PORTFOLIO_SIZE=10000,POSITION_SIZE_PCT=10,POSITION_SIZE_MAX_PCT=20,MIN_POSITION_SIZE=50
       - --set-secrets=NATS_URLS=signalngn-prod-nats-url:latest,NATS_CREDS=signalngn-prod-nats-creds:latest,SN_API_KEY=signalngn-prod-sn-api-key:latest
     waitFor:
