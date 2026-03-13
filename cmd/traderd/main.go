@@ -17,9 +17,7 @@ import (
 	"github.com/Signal-ngn/trader/internal/api/middleware"
 	"github.com/Signal-ngn/trader/internal/config"
 	"github.com/Signal-ngn/trader/internal/engine"
-	"github.com/Signal-ngn/trader/internal/ingest"
 	"github.com/Signal-ngn/trader/internal/platform"
-	"github.com/Signal-ngn/trader/internal/store"
 )
 
 func main() {
@@ -53,51 +51,9 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Initialize database
-	repo, err := store.NewRepository(ctx, cfg.DatabaseURL)
-	if err != nil {
-		log.Fatal().Err(err).Msg("failed to connect to database")
-	}
-	defer repo.Close()
-
-	if err := repo.Ping(ctx); err != nil {
-		log.Fatal().Err(err).Msg("failed to ping database")
-	}
-	log.Info().Msg("connected to PostgreSQL")
-
-	// Run migrations
-	migrated, err := store.RunMigrationsWithReport(ctx, repo.Pool())
-	if err != nil {
-		log.Fatal().Err(err).Msg("failed to run migrations")
-	}
-	log.Info().Msg("migrations complete")
-
-	// If a positions-rebuild migration was just applied, replay all trades
-	// through the updated P&L logic.
-	rebuildMigrations := map[string]bool{
-		"004_rebuild_positions_margin_pnl":          true,
-		"005_rebuild_positions_margin_scale":         true,
-		"006_rebuild_positions_default_leverage":     true,
-	}
-	for _, v := range migrated {
-		if rebuildMigrations[v] {
-			log.Info().Str("migration", v).Msg("rebuild migration applied — rebuilding all positions")
-			if err := repo.RebuildAllPositions(ctx); err != nil {
-				log.Fatal().Err(err).Msg("failed to rebuild positions")
-			}
-			log.Info().Msg("position rebuild complete")
-			break
-		}
-	}
-
-	// Initialise UserRepository (shares the same pool)
-	userRepo := store.NewUserRepository(repo.Pool())
-
-	// Start HTTP server immediately so Cloud Run health checks pass while NATS
-	// is still connecting. The server runs without NATS initially; the consumer
-	// is wired in once NATS connects (below).
+	// Start HTTP server immediately so Cloud Run health checks pass.
 	defaultTenantID := uuid.MustParse(middleware.DefaultTenantID.String())
-	srv := api.NewServer(repo, userRepo, nil, cfg.EnforceAuth, defaultTenantID)
+	srv := api.NewServer(cfg.EnforceAuth, defaultTenantID)
 	httpServer := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,
 		Handler: srv.Router(),
@@ -123,8 +79,6 @@ func main() {
 		platformClient := platform.New(cfg.TraderAPIURL, cfg.SNAPIKey)
 
 		// Construct Firestore client using Application Default Credentials (ADC).
-		// On Cloud Run the trader service account (roles/datastore.user) is picked
-		// up automatically — no explicit credentials file needed.
 		firestoreClient, err := firestore.NewClient(ctx, cfg.FirestoreProjectID)
 		if err != nil {
 			log.Fatal().Err(err).Msg("failed to create Firestore client")
@@ -142,25 +96,6 @@ func main() {
 		}()
 		log.Info().Strs("accounts", cfg.TraderAccounts).Str("mode", cfg.TradingMode).Msg("trading engine starting")
 	}
-
-	// Connect to NATS in the background so startup doesn't block.
-	// The consumer starts automatically once connected.
-	go func() {
-		nc, err := ingest.ConnectNATS(cfg.NATSURLs, cfg.NATSCredsFile, cfg.NATSCreds)
-		if err != nil {
-			// ConnectNATS retries forever; this path is unreachable in practice.
-			log.Error().Err(err).Msg("failed to connect to NATS")
-			return
-		}
-		defer nc.Close()
-		log.Info().Str("url", nc.ConnectedUrl()).Msg("connected to NATS")
-
-		consumer := ingest.NewConsumer(nc, repo)
-		consumer.WithPublisher(srv.StreamRegistry())
-		if err := consumer.Start(ctx); err != nil {
-			log.Error().Err(err).Msg("NATS consumer error")
-		}
-	}()
 
 	// Wait for shutdown signal
 	<-sigChan

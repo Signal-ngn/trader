@@ -15,7 +15,6 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/Signal-ngn/trader/internal/config"
-	"github.com/Signal-ngn/trader/internal/ingest"
 	"github.com/Signal-ngn/trader/internal/platform"
 )
 
@@ -65,7 +64,7 @@ type Engine struct {
 	accounts []string
 
 	// publisher fans out trade events to SSE subscribers after each fill.
-	publisher ingest.TradePublisher
+	publisher TradePublisher
 
 	// NGS NATS connection (separate from the ledger NATS connection)
 	ngsConn *nats.Conn
@@ -97,9 +96,15 @@ type Engine struct {
 	logger zerolog.Logger
 }
 
+// TradePublisher is a minimal interface for fanning out trade events to SSE subscribers.
+// *api.StreamRegistry satisfies this interface.
+type TradePublisher interface {
+	Publish(accountID string, payload interface{})
+}
+
 // New creates a new Engine. The Exchange is selected based on cfg.TradingMode.
 // publisher may be nil; when set, every filled trade is fanned out to SSE subscribers.
-func New(cfg *config.Config, repo EngineStore, publisher ingest.TradePublisher) *Engine {
+func New(cfg *config.Config, repo EngineStore, publisher TradePublisher) *Engine {
 	var ex Exchange
 	if cfg.TradingMode == "live" {
 		ex = NewBinanceFuturesExchange(cfg)

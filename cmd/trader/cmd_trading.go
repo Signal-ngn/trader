@@ -51,7 +51,7 @@ var tradingListCmd = &cobra.Command{
 		}
 		useJSON, _ := cmd.Flags().GetBool("json")
 		if useJSON {
-			raw, err := c.GetRaw(c.apiURL("/config/trading", q))
+			_, raw, err := c.GetRaw(c.apiURL("/config/trading", q))
 			if err != nil {
 				return err
 			}
@@ -100,7 +100,7 @@ var tradingGetCmd = &cobra.Command{
 		q.Set("account_id", account)
 		useJSON, _ := cmd.Flags().GetBool("json")
 		if useJSON {
-			raw, err := c.GetRaw(c.apiURL("/config/trading/"+exchange+"/"+product, q))
+			_, raw, err := c.GetRaw(c.apiURL("/config/trading/"+exchange+"/"+product, q))
 			if err != nil {
 				return err
 			}

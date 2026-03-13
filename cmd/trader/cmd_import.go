@@ -15,11 +15,11 @@ type importTradeResult struct {
 }
 
 type importResult struct {
-	Total      int                  `json:"total"`
-	Inserted   int                  `json:"inserted"`
-	Duplicates int                  `json:"duplicates"`
-	Errors     int                  `json:"errors"`
-	Results    []importTradeResult  `json:"results,omitempty"`
+	Total      int                 `json:"total"`
+	Inserted   int                 `json:"inserted"`
+	Duplicates int                 `json:"duplicates"`
+	Errors     int                 `json:"errors"`
+	Results    []importTradeResult `json:"results,omitempty"`
 }
 
 var importCmd = &cobra.Command{
@@ -35,8 +35,8 @@ var importCmd = &cobra.Command{
 			return fmt.Errorf("read file: %w", err)
 		}
 
-		c := newClient()
-		endpoint := c.traderURL("/api/v1/import")
+		c := newPlatformClient()
+		endpoint := c.apiURL("/api/v1/import")
 
 		if useJSON {
 			status, raw, err := c.PostRaw(endpoint, data)

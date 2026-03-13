@@ -39,8 +39,8 @@ var portfolioCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		accountID := args[0]
-		c := newClient()
-		endpoint := c.traderURL("/api/v1/accounts/" + accountID + "/portfolio")
+		c := newPlatformClient()
+		endpoint := c.apiURL("/api/v1/accounts/" + accountID + "/portfolio")
 		useJSON, _ := cmd.Flags().GetBool("json")
 
 		if useJSON {
@@ -58,7 +58,7 @@ var portfolioCmd = &cobra.Command{
 
 		var summary portfolioSummary
 		if err := c.Get(endpoint, &summary); err != nil {
-			if isNotFound(err) {
+			if isPlatformNotFound(err) {
 				fmt.Fprintln(os.Stderr, "account not found")
 				os.Exit(1)
 			}

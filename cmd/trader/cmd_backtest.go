@@ -206,7 +206,7 @@ var backtestListCmd = &cobra.Command{
 
 		useJSON, _ := cmd.Flags().GetBool("json")
 		if useJSON {
-			raw, err := c.GetRaw(c.apiURL("/backtests", q))
+			_, raw, err := c.GetRaw(c.apiURL("/backtests", q))
 			if err != nil {
 				return err
 			}
@@ -262,7 +262,7 @@ var backtestGetCmd = &cobra.Command{
 		c := newPlatformClient()
 		useJSON, _ := cmd.Flags().GetBool("json")
 		if useJSON {
-			raw, err := c.GetRaw(c.apiURL("/backtests/" + args[0]))
+			_, raw, err := c.GetRaw(c.apiURL("/backtests/" + args[0]))
 			if err != nil {
 				return err
 			}

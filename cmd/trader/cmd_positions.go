@@ -15,11 +15,11 @@ var positionsCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		accountID := args[0]
-		c := newClient()
+		c := newPlatformClient()
 
 		q := url.Values{}
 		q.Set("status", positionsStatus)
-		endpoint := c.traderURL("/api/v1/accounts/"+accountID+"/positions", q)
+		endpoint := c.apiURL("/api/v1/accounts/"+accountID+"/positions", q)
 		useJSON, _ := cmd.Flags().GetBool("json")
 
 		if useJSON {

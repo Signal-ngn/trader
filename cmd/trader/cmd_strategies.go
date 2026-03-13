@@ -53,7 +53,7 @@ var strategiesListCmd = &cobra.Command{
 		}
 		useJSON, _ := cmd.Flags().GetBool("json")
 		if useJSON {
-			raw, err := c.GetRaw(c.apiURL("/strategies", q))
+			_, raw, err := c.GetRaw(c.apiURL("/strategies", q))
 			if err != nil {
 				return err
 			}
@@ -90,7 +90,7 @@ var strategiesGetCmd = &cobra.Command{
 		c := newPlatformClient()
 		useJSON, _ := cmd.Flags().GetBool("json")
 		if useJSON {
-			raw, err := c.GetRaw(c.apiURL("/user-strategies/" + args[0]))
+			_, raw, err := c.GetRaw(c.apiURL("/user-strategies/" + args[0]))
 			if err != nil {
 				return err
 			}

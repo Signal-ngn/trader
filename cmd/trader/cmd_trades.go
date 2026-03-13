@@ -120,7 +120,7 @@ var tradesListCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		accountID := args[0]
-		c := newClient()
+		c := newPlatformClient()
 		useJSON, _ := cmd.Flags().GetBool("json")
 
 		if tradesRaw {
@@ -154,7 +154,7 @@ var tradesListCmd = &cobra.Command{
 					q.Set("end", tradesEnd)
 				}
 
-				endpoint := c.traderURL("/api/v1/accounts/"+accountID+"/trades", q)
+				endpoint := c.apiURL("/api/v1/accounts/"+accountID+"/trades", q)
 				var result tradeListResult
 				if err := c.Get(endpoint, &result); err != nil {
 					return err
@@ -241,7 +241,7 @@ var tradesListCmd = &cobra.Command{
 				q.Set("cursor", cursor)
 			}
 
-			endpoint := c.traderURL("/api/v1/accounts/"+accountID+"/positions", q)
+			endpoint := c.apiURL("/api/v1/accounts/"+accountID+"/positions", q)
 			statusCode, body, err := c.GetRaw(endpoint)
 			if err != nil {
 				return err
@@ -498,8 +498,8 @@ var tradesAddCmd = &cobra.Command{
 			event.FundingFee = &addFundingFee
 		}
 
-		c := newClient()
-		endpoint := c.traderURL("/api/v1/import")
+		c := newPlatformClient()
+		endpoint := c.apiURL("/api/v1/import")
 		req := addTradeRequest{Trades: []addTradeEvent{event}}
 
 		var result importResult
@@ -544,21 +544,21 @@ var tradesDeleteCmd = &cobra.Command{
 			return fmt.Errorf("use --confirm to delete a trade")
 		}
 
-		c := newClient()
-		endpoint := c.traderURL("/api/v1/trades/" + tradeID)
+		c := newPlatformClient()
+		endpoint := c.apiURL("/api/v1/trades/" + tradeID)
 
 		var result map[string]string
-		err := c.Delete(endpoint, &result)
+		err := c.DeleteWithResult(endpoint, &result)
 		if err != nil {
-			if isNotFound(err) {
+			if isPlatformNotFound(err) {
 				return fmt.Errorf("trade not found")
 			}
-			if isConflict(err) {
+			if isPlatformConflict(err) {
 				// Extract server message from the API error body.
-				if e, ok := err.(*apiError); ok {
-					var body map[string]string
-					if jsonErr := json.Unmarshal([]byte(e.Body), &body); jsonErr == nil {
-						if msg, ok := body["error"]; ok {
+				if body := platformErrorBody(err); body != "" {
+					var bodyMap map[string]string
+					if jsonErr := json.Unmarshal([]byte(body), &bodyMap); jsonErr == nil {
+						if msg, ok := bodyMap["error"]; ok {
 							return fmt.Errorf("%s", msg)
 						}
 					}

@@ -70,7 +70,7 @@ func runPriceSingle(c *PlatformClient, exchange, product, granularity string, us
 	path := fmt.Sprintf("/prices/%s/%s", exchange, product)
 
 	if useJSON {
-		raw, err := c.GetRaw(c.apiURL(path, q))
+		_, raw, err := c.GetRaw(c.apiURL(path, q))
 		if err != nil {
 			return err
 		}
