@@ -216,27 +216,28 @@ func (s *APIEngineStore) incrementDailyPnL(ctx context.Context, accountID string
 // (false, err) on failure.
 func (s *APIEngineStore) InsertTradeAndUpdatePosition(ctx context.Context, tenantID uuid.UUID, trade *domain.Trade) (bool, error) {
 	sub := platform.TradeSubmission{
-		TenantID:    tenantID.String(),
-		TradeID:     trade.TradeID,
-		AccountID:   trade.AccountID,
-		Symbol:      trade.Symbol,
-		Side:        string(trade.Side),
-		Quantity:    trade.Quantity,
-		Price:       trade.Price,
-		Fee:         trade.Fee,
-		FeeCurrency: trade.FeeCurrency,
-		MarketType:  string(trade.MarketType),
-		Timestamp:   trade.Timestamp.UTC().Format(time.RFC3339),
-		CostBasis:   trade.CostBasis,
-		RealizedPnL: trade.RealizedPnL,
-		Leverage:    trade.Leverage,
-		Margin:      trade.Margin,
-		Strategy:    trade.Strategy,
-		EntryReason: trade.EntryReason,
-		ExitReason:  trade.ExitReason,
-		Confidence:  trade.Confidence,
-		StopLoss:    trade.StopLoss,
-		TakeProfit:  trade.TakeProfit,
+		TenantID:     tenantID.String(),
+		TradeID:      trade.TradeID,
+		AccountID:    trade.AccountID,
+		Symbol:       trade.Symbol,
+		Side:         string(trade.Side),
+		PositionSide: string(trade.PositionSide),
+		Quantity:     trade.Quantity,
+		Price:        trade.Price,
+		Fee:          trade.Fee,
+		FeeCurrency:  trade.FeeCurrency,
+		MarketType:   string(trade.MarketType),
+		Timestamp:    trade.Timestamp.UTC().Format(time.RFC3339),
+		CostBasis:    trade.CostBasis,
+		RealizedPnL:  trade.RealizedPnL,
+		Leverage:     trade.Leverage,
+		Margin:       trade.Margin,
+		Strategy:     trade.Strategy,
+		EntryReason:  trade.EntryReason,
+		ExitReason:   trade.ExitReason,
+		Confidence:   trade.Confidence,
+		StopLoss:     trade.StopLoss,
+		TakeProfit:   trade.TakeProfit,
 	}
 
 	err := s.client.SubmitTrade(ctx, sub)
@@ -267,14 +268,26 @@ func (s *APIEngineStore) InsertTradeAndUpdatePosition(ctx context.Context, tenan
 }
 
 // costDeltaForTrade returns the signed balance delta resulting from a trade.
-// For buy/open: negative (capital leaves account). For sell/close: positive
-// (capital returns plus realised P&L).
+//
+// CostBasis always holds the margin for this trade (= notional/leverage for
+// futures, or full notional for spot). Routing by position side:
+//
+//	open  long  (buy  + long)  → deduct margin  (negative)
+//	open  short (sell + short) → deduct margin  (negative)
+//	close long  (sell + long)  → return margin + realised P&L (positive)
+//	close short (buy  + short) → return margin + realised P&L (positive)
 func costDeltaForTrade(trade *domain.Trade) float64 {
-	if trade.Side == domain.SideBuy {
-		// Opening a long or covering a short: capital committed = cost basis.
+	ps := trade.PositionSide
+	if ps == "" {
+		ps = domain.PositionSideLong // default for spot trades
+	}
+
+	isOpen := (trade.Side == domain.SideBuy && ps == domain.PositionSideLong) ||
+		(trade.Side == domain.SideSell && ps == domain.PositionSideShort)
+
+	if isOpen {
 		return -(trade.CostBasis)
 	}
-	// Selling a long or shorting: capital returned = cost basis + realised P&L.
 	return trade.CostBasis + trade.RealizedPnL
 }
 
@@ -297,26 +310,14 @@ func (s *APIEngineStore) GetAccountBalance(ctx context.Context, tenantID uuid.UU
 
 // --- AdjustBalance (task 7.3) ---
 
-// AdjustBalance reads the current balance, applies the delta, and calls
-// platform.SetBalance to persist the new value. If no balance record exists,
-// seeds from PORTFOLIO_SIZE_USD.
+// AdjustBalance atomically applies a signed delta to the account balance via
+// PATCH /api/v1/accounts/{id}/balance. The platform API handles seeding from
+// PortfolioSize on first use, so no client-side read-modify-write is needed.
+// This eliminates the race condition where concurrent trades each read the same
+// stale balance and overwrite each other's deductions.
 func (s *APIEngineStore) AdjustBalance(ctx context.Context, tenantID uuid.UUID, accountID, currency string, delta float64) error {
-	current, err := s.GetAccountBalance(ctx, tenantID, accountID, currency)
-	if err != nil {
-		return fmt.Errorf("adjust balance: get current: %w", err)
-	}
-
-	var base float64
-	if current != nil {
-		base = *current
-	} else {
-		// Seed from portfolio size on first boot.
-		base = s.cfg.PortfolioSize
-	}
-
-	newBalance := base + delta
-	if err := s.client.SetBalance(ctx, accountID, newBalance); err != nil {
-		return fmt.Errorf("adjust balance: set balance: %w", err)
+	if err := s.client.AdjustBalanceDelta(ctx, accountID, delta, s.cfg.PortfolioSize); err != nil {
+		return fmt.Errorf("adjust balance: %w", err)
 	}
 	return nil
 }

@@ -313,79 +313,84 @@ func (c *PlatformClient) GetPortfolio(ctx context.Context, accountID string) (*P
 
 // tradePayload is the request body for POST /api/v1/trades.
 type tradePayload struct {
-	TenantID    string   `json:"tenant_id"`
-	TradeID     string   `json:"trade_id"`
-	AccountID   string   `json:"account_id"`
-	Symbol      string   `json:"symbol"`
-	Side        string   `json:"side"`
-	Quantity    float64  `json:"quantity"`
-	Price       float64  `json:"price"`
-	Fee         float64  `json:"fee"`
-	FeeCurrency string   `json:"fee_currency"`
-	MarketType  string   `json:"market_type"`
-	Timestamp   string   `json:"timestamp"`
-	CostBasis   float64  `json:"cost_basis"`
-	RealizedPnL float64  `json:"realized_pnl"`
-	Leverage    *int     `json:"leverage,omitempty"`
-	Margin      *float64 `json:"margin,omitempty"`
-	Strategy    *string  `json:"strategy,omitempty"`
-	EntryReason *string  `json:"entry_reason,omitempty"`
-	ExitReason  *string  `json:"exit_reason,omitempty"`
-	Confidence  *float64 `json:"confidence,omitempty"`
-	StopLoss    *float64 `json:"stop_loss,omitempty"`
-	TakeProfit  *float64 `json:"take_profit,omitempty"`
+	TenantID     string   `json:"tenant_id"`
+	TradeID      string   `json:"trade_id"`
+	AccountID    string   `json:"account_id"`
+	Symbol       string   `json:"symbol"`
+	Side         string   `json:"side"`
+	PositionSide string   `json:"position_side,omitempty"`
+	Quantity     float64  `json:"quantity"`
+	Price        float64  `json:"price"`
+	Fee          float64  `json:"fee"`
+	FeeCurrency  string   `json:"fee_currency"`
+	MarketType   string   `json:"market_type"`
+	Timestamp    string   `json:"timestamp"`
+	CostBasis    float64  `json:"cost_basis"`
+	RealizedPnL  float64  `json:"realized_pnl"`
+	Leverage     *int     `json:"leverage,omitempty"`
+	Margin       *float64 `json:"margin,omitempty"`
+	Strategy     *string  `json:"strategy,omitempty"`
+	EntryReason  *string  `json:"entry_reason,omitempty"`
+	ExitReason   *string  `json:"exit_reason,omitempty"`
+	Confidence   *float64 `json:"confidence,omitempty"`
+	StopLoss     *float64 `json:"stop_loss,omitempty"`
+	TakeProfit   *float64 `json:"take_profit,omitempty"`
 }
 
 // TradeSubmission holds the data to submit for a single trade.
 // Matches domain.Trade fields needed by the platform API.
 type TradeSubmission struct {
-	TenantID    string
-	TradeID     string
-	AccountID   string
-	Symbol      string
-	Side        string
-	Quantity    float64
-	Price       float64
-	Fee         float64
-	FeeCurrency string
-	MarketType  string
-	Timestamp   string // RFC3339
-	CostBasis   float64
-	RealizedPnL float64
-	Leverage    *int
-	Margin      *float64
-	Strategy    *string
-	EntryReason *string
-	ExitReason  *string
-	Confidence  *float64
-	StopLoss    *float64
-	TakeProfit  *float64
+	TenantID     string
+	TradeID      string
+	AccountID    string
+	Symbol       string
+	Side         string
+	// PositionSide disambiguates which position side this trade targets.
+	// "long" (default) or "short".
+	PositionSide string
+	Quantity     float64
+	Price        float64
+	Fee          float64
+	FeeCurrency  string
+	MarketType   string
+	Timestamp    string // RFC3339
+	CostBasis    float64
+	RealizedPnL  float64
+	Leverage     *int
+	Margin       *float64
+	Strategy     *string
+	EntryReason  *string
+	ExitReason   *string
+	Confidence   *float64
+	StopLoss     *float64
+	TakeProfit   *float64
 }
 
 // SubmitTrade calls POST /api/v1/trades. Returns nil on 2xx or 409 (idempotent).
 func (c *PlatformClient) SubmitTrade(ctx context.Context, trade TradeSubmission) error {
 	payload := tradePayload{
 		TenantID:    trade.TenantID,
-		TradeID:     trade.TradeID,
-		AccountID:   trade.AccountID,
-		Symbol:      trade.Symbol,
-		Side:        trade.Side,
-		Quantity:    trade.Quantity,
-		Price:       trade.Price,
-		Fee:         trade.Fee,
-		FeeCurrency: trade.FeeCurrency,
-		MarketType:  trade.MarketType,
-		Timestamp:   trade.Timestamp,
-		CostBasis:   trade.CostBasis,
-		RealizedPnL: trade.RealizedPnL,
-		Leverage:    trade.Leverage,
-		Margin:      trade.Margin,
-		Strategy:    trade.Strategy,
-		EntryReason: trade.EntryReason,
-		ExitReason:  trade.ExitReason,
-		Confidence:  trade.Confidence,
-		StopLoss:    trade.StopLoss,
-		TakeProfit:  trade.TakeProfit,
+		TradeID:      trade.TradeID,
+		AccountID:    trade.AccountID,
+		Symbol:       trade.Symbol,
+		Side:         trade.Side,
+		PositionSide: trade.PositionSide,
+		Quantity:     trade.Quantity,
+		Price:        trade.Price,
+		Fee:          trade.Fee,
+		FeeCurrency:  trade.FeeCurrency,
+		MarketType:   trade.MarketType,
+		Timestamp:    trade.Timestamp,
+		CostBasis:    trade.CostBasis,
+		RealizedPnL:  trade.RealizedPnL,
+		Leverage:     trade.Leverage,
+		Margin:       trade.Margin,
+		Strategy:     trade.Strategy,
+		EntryReason:  trade.EntryReason,
+		ExitReason:   trade.ExitReason,
+		Confidence:   trade.Confidence,
+		StopLoss:     trade.StopLoss,
+		TakeProfit:   trade.TakeProfit,
 	}
 
 	b, err := json.Marshal(payload)
@@ -413,6 +418,39 @@ func (c *PlatformClient) SubmitTrade(ctx context.Context, trade TradeSubmission)
 	if resp.StatusCode == http.StatusConflict {
 		return nil // idempotent — trade already recorded
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &APIError{StatusCode: resp.StatusCode, Body: string(rb)}
+	}
+	return nil
+}
+
+// AdjustBalanceDelta calls PATCH /api/v1/accounts/{id}/balance to atomically
+// apply a signed delta. portfolioSize is used server-side to seed the balance on
+// first use (when the account was auto-created with no explicit balance).
+func (c *PlatformClient) AdjustBalanceDelta(ctx context.Context, accountID string, delta, portfolioSize float64) error {
+	payload := map[string]float64{"delta": delta, "portfolio_size": portfolioSize}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.apiURL("/api/v1/accounts/"+accountID+"/balance"), bytes.NewReader(b))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("request: %w", err)
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &APIError{StatusCode: resp.StatusCode, Body: string(rb)}
 	}

@@ -24,14 +24,33 @@ func decodeJSON(r io.Reader, v interface{}) error {
 	return json.NewDecoder(r).Decode(v)
 }
 
-// costBasisForTrade calculates the appropriate cost_basis and realized_pnl for
-// a trade. Moved from internal/store so the engine has no store dependency.
+// costBasisForTrade calculates the cost_basis (margin) and realized_pnl for a
+// close trade. Called only from executeCloseTrade.
+//
+// CostBasis is set to the margin that was originally committed for this
+// position (= avgEntryPrice × quantity / leverage). For spot (leverage 1) this
+// is the full notional, matching the old behaviour.
+//
+// RealizedPnL is computed with the correct sign for each position side:
+//
+//	long  close (sell+long):  P&L = (exitPrice − avgEntry) × qty − fee
+//	short close (buy+short):  P&L = (avgEntry − exitPrice) × qty − fee
 func costBasisForTrade(trade *domain.Trade, avgEntryPrice float64) {
-	if trade.Side == domain.SideBuy {
-		trade.CostBasis = trade.Quantity*trade.Price + trade.Fee
-		trade.RealizedPnL = 0
+	leverage := 1.0
+	if trade.Leverage != nil && *trade.Leverage > 0 {
+		leverage = float64(*trade.Leverage)
+	}
+
+	// Margin committed at open.
+	margin := avgEntryPrice * trade.Quantity / leverage
+
+	if trade.PositionSide == domain.PositionSideShort {
+		// Close short (buy+short): profit when price fell below entry.
+		trade.CostBasis = margin
+		trade.RealizedPnL = (avgEntryPrice-trade.Price)*trade.Quantity - trade.Fee
 	} else {
-		trade.CostBasis = avgEntryPrice * trade.Quantity
+		// Close long (sell+long) or legacy spot sell: profit when price rose.
+		trade.CostBasis = margin
 		trade.RealizedPnL = (trade.Price-avgEntryPrice)*trade.Quantity - trade.Fee
 	}
 }

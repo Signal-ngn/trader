@@ -250,24 +250,25 @@ func (e *Engine) handleOpenSignal(ctx context.Context, signal SignalPayload, pro
 	}
 
 	trade := &domain.Trade{
-		TenantID:    tenantID,
-		TradeID:     fmt.Sprintf("engine-%s-%s-%d", accountID, product, now.UnixNano()),
-		AccountID:   accountID,
-		Symbol:      product,
-		Side:        side,
-		Quantity:    qty,
-		Price:       signal.Price,
-		Fee:         0,
-		FeeCurrency: "USD",
-		MarketType:  marketType,
-		Timestamp:   now,
-		IngestedAt:  now,
-		Leverage:    leveragePtr,
-		Margin:      marginPtr,
-		Strategy:    stratPtr,
-		Confidence:  conf,
-		StopLoss:    sl,
-		TakeProfit:  tp,
+		TenantID:     tenantID,
+		TradeID:      fmt.Sprintf("engine-%s-%s-%d", accountID, product, now.UnixNano()),
+		AccountID:    accountID,
+		Symbol:       product,
+		Side:         side,
+		PositionSide: positionSide,
+		Quantity:     qty,
+		Price:        signal.Price,
+		Fee:          0,
+		FeeCurrency:  "USD",
+		MarketType:   marketType,
+		Timestamp:    now,
+		IngestedAt:   now,
+		Leverage:     leveragePtr,
+		Margin:       marginPtr,
+		Strategy:     stratPtr,
+		Confidence:   conf,
+		StopLoss:     sl,
+		TakeProfit:   tp,
 	}
 	if signal.Reason != "" {
 		r := signal.Reason
@@ -566,8 +567,12 @@ func (e *Engine) executeOpenTrade(ctx context.Context, signal SignalPayload, tra
 		}
 	}
 
-	// Compute cost basis for buys.
-	if trade.Side == domain.SideBuy {
+	// Compute cost basis = margin committed for this trade.
+	// For futures: margin = notional / leverage (already in trade.Margin).
+	// For spot: full notional.
+	if trade.MarketType == domain.MarketTypeFutures && trade.Margin != nil && *trade.Margin > 0 {
+		trade.CostBasis = *trade.Margin
+	} else {
 		trade.CostBasis = trade.Quantity*trade.Price + trade.Fee
 	}
 
@@ -678,21 +683,22 @@ func (e *Engine) executeCloseTrade(ctx context.Context, ps *PositionState, curre
 	exitStr := exitReason
 
 	trade := &domain.Trade{
-		TenantID:    tenantID,
-		TradeID:     fmt.Sprintf("engine-close-%s-%s-%d", ps.AccountID, ps.Symbol, now.UnixNano()),
-		AccountID:   ps.AccountID,
-		Symbol:      ps.Symbol,
-		Side:        side,
-		Quantity:    qty,
-		Price:       currentPrice,
-		Fee:         0,
-		FeeCurrency: "USD",
-		MarketType:  marketType,
-		Timestamp:   now,
-		IngestedAt:  now,
-		Leverage:    leveragePtr,
-		Strategy:    stratPtr,
-		ExitReason:  &exitStr,
+		TenantID:     tenantID,
+		TradeID:      fmt.Sprintf("engine-close-%s-%s-%d", ps.AccountID, ps.Symbol, now.UnixNano()),
+		AccountID:    ps.AccountID,
+		Symbol:       ps.Symbol,
+		Side:         side,
+		PositionSide: domain.PositionSide(ps.Side), // "long" or "short"
+		Quantity:     qty,
+		Price:        currentPrice,
+		Fee:          0,
+		FeeCurrency:  "USD",
+		MarketType:   marketType,
+		Timestamp:    now,
+		IngestedAt:   now,
+		Leverage:     leveragePtr,
+		Strategy:     stratPtr,
+		ExitReason:   &exitStr,
 	}
 
 	// Cost basis for sell = avg entry price × quantity (used by store for P&L).

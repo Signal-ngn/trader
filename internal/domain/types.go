@@ -74,11 +74,15 @@ type Account struct {
 
 // Trade represents a single trade execution.
 type Trade struct {
-	TenantID    uuid.UUID  `json:"tenant_id"`
-	TradeID     string     `json:"trade_id"`
-	AccountID   string     `json:"account_id"`
-	Symbol      string     `json:"symbol"`
-	Side        Side       `json:"side"`
+	TenantID     uuid.UUID    `json:"tenant_id"`
+	TradeID      string       `json:"trade_id"`
+	AccountID    string       `json:"account_id"`
+	Symbol       string       `json:"symbol"`
+	Side         Side         `json:"side"`
+	// PositionSide disambiguates which position side this trade targets.
+	// "long"  → buy opens / sell closes a long (default when empty)
+	// "short" → sell opens / buy covers a short
+	PositionSide PositionSide `json:"position_side,omitempty"`
 	Quantity    float64    `json:"quantity"`
 	Price       float64    `json:"price"`
 	Fee         float64    `json:"fee"`
