@@ -3,7 +3,7 @@ cask "trader" do
   name "trader"
   desc "Signal Ngn trader CLI — query accounts, positions, trades, and manage live exchange orders"
   homepage "https://github.com/Signal-ngn/trader"
-  version "0.9.5"
+  version "0.9.6"
 
   livecheck do
     skip "Auto-generated on release."
@@ -14,18 +14,18 @@ cask "trader" do
   on_macos do
     on_intel do
       url "https://github.com/Signal-ngn/trader/releases/download/v#{version}/trader_darwin_amd64.tar.gz"
-      sha256 "ca42fcbed6c5d73152f8525cdc6787ff9646aca33f840ce9d97c54cd7be5ced5"
+      sha256 "868d0dd95f2b136d3fae8925505cd5f5ec90d93dd05ac7d75834be50c89e2d06"
     end
     on_arm do
       url "https://github.com/Signal-ngn/trader/releases/download/v#{version}/trader_darwin_arm64.tar.gz"
-      sha256 "693f81d78b1c9f8393fde58693dde4f08ee0c4cdc7491a7bde3e501a2cbd9395"
+      sha256 "0d953ce3e916cae0be878b56151cec683306b63fca71b97c8e2e37c0b6fc7bdf"
     end
   end
 
   on_linux do
     on_intel do
       url "https://github.com/Signal-ngn/trader/releases/download/v#{version}/trader_linux_amd64.tar.gz"
-      sha256 "3e659447806aabcb529d41c0cf3f238cbb944ef26049882fc60ac3cddc8cff10"
+      sha256 "53c4a713fc82b3e35d23d605c5c6498cf2ed687dc12f5b91234e43662dea0042"
     end
   end
 
