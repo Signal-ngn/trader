@@ -1,5 +1,9 @@
 # Cloud Build configuration for production deployment to signalngn-prod
-# Usage: gcloud builds submit --project=signalngn-prod --config=cloudbuild-prod.yaml --substitutions=_TAG=$(git rev-parse --short HEAD)
+#
+# Triggered automatically when a tag matching release-x.x.x is pushed.
+# Can also be run manually:
+#   gcloud builds submit --project=signalngn-prod --region=europe-west1 \
+#     --config=cloudbuild-prod.yaml --substitutions=_TAG=$(git rev-parse --short HEAD)
 
 substitutions:
   _REGION: europe-west1
@@ -13,7 +17,9 @@ substitutions:
   _MIN_INSTANCES: "0"
   _MAX_INSTANCES: "1"
   _CONCURRENCY: "80"
-  _TAG: "latest"
+  # When triggered by a tag push, TAG_NAME is set automatically by Cloud Build.
+  # For manual builds, pass _TAG explicitly.
+  _TAG: "${TAG_NAME:-latest}"
 
 options:
   logging: CLOUD_LOGGING_ONLY
@@ -26,7 +32,7 @@ steps:
     args:
       - build
       - -t
-      - ${_ARTIFACT_REGISTRY}/${_IMAGE_NAME}:${_TAG}
+      - ${_ARTIFACT_REGISTRY}/${_IMAGE_NAME}:${TAG_NAME}
       - -t
       - ${_ARTIFACT_REGISTRY}/${_IMAGE_NAME}:latest
       - .
@@ -51,7 +57,7 @@ steps:
       - ${_SERVICE_NAME}
       - --project=${PROJECT_ID}
       - --region=${_REGION}
-      - --image=${_ARTIFACT_REGISTRY}/${_IMAGE_NAME}:${_TAG}
+      - --image=${_ARTIFACT_REGISTRY}/${_IMAGE_NAME}:${TAG_NAME}
       - --platform=managed
       - --memory=${_MEMORY}
       - --cpu=${_CPU}
@@ -67,7 +73,7 @@ steps:
       - push
 
 images:
-  - ${_ARTIFACT_REGISTRY}/${_IMAGE_NAME}:${_TAG}
+  - ${_ARTIFACT_REGISTRY}/${_IMAGE_NAME}:${TAG_NAME}
   - ${_ARTIFACT_REGISTRY}/${_IMAGE_NAME}:latest
 
 timeout: 600s
