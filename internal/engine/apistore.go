@@ -210,13 +210,13 @@ func (s *APIEngineStore) incrementDailyPnL(ctx context.Context, accountID string
 
 // --- InsertTradeAndUpdatePosition (task 7.1) ---
 
-// InsertTradeAndUpdatePosition submits a trade to the platform API. On success
-// it increments the daily P&L (if realised P&L is non-zero) and adjusts the
-// account balance. Returns (true, nil) on 2xx, (false, nil) on 409 (duplicate),
-// (false, err) on failure.
-func (s *APIEngineStore) InsertTradeAndUpdatePosition(ctx context.Context, tenantID uuid.UUID, trade *domain.Trade) (bool, error) {
+// submitTradeAndPnL submits a trade to the platform API and increments the
+// daily P&L accumulator. Shared by InsertTradeAndUpdatePosition and
+// InsertTradeOnly. Returns (true, nil) on success, (false, nil) on 409
+// (duplicate), (false, err) on failure.
+func (s *APIEngineStore) submitTradeAndPnL(ctx context.Context, trade *domain.Trade) (bool, error) {
 	sub := platform.TradeSubmission{
-		TenantID:     tenantID.String(),
+		TenantID:     trade.TenantID.String(),
 		TradeID:      trade.TradeID,
 		AccountID:    trade.AccountID,
 		Symbol:       trade.Symbol,
@@ -257,8 +257,21 @@ func (s *APIEngineStore) InsertTradeAndUpdatePosition(ctx context.Context, tenan
 		}
 	}
 
+	return true, nil
+}
+
+// InsertTradeAndUpdatePosition submits a trade to the platform API. On success
+// it increments the daily P&L (if realised P&L is non-zero) and adjusts the
+// account balance. Returns (true, nil) on 2xx, (false, nil) on 409 (duplicate),
+// (false, err) on failure.
+func (s *APIEngineStore) InsertTradeAndUpdatePosition(ctx context.Context, tenantID uuid.UUID, trade *domain.Trade) (bool, error) {
+	inserted, err := s.submitTradeAndPnL(ctx, trade)
+	if err != nil || !inserted {
+		return inserted, err
+	}
+
 	// Adjust balance — compute the signed cost delta.
-	balanceDelta := costDeltaForTrade(trade)
+	balanceDelta := CostDeltaForTrade(trade)
 	if adjustErr := s.AdjustBalance(ctx, tenantID, trade.AccountID, "USD", balanceDelta); adjustErr != nil {
 		// Non-fatal: balance can reconcile on the next write.
 		_ = adjustErr
@@ -267,7 +280,14 @@ func (s *APIEngineStore) InsertTradeAndUpdatePosition(ctx context.Context, tenan
 	return true, nil
 }
 
-// costDeltaForTrade returns the signed balance delta resulting from a trade.
+// InsertTradeOnly submits a trade to the platform API and increments daily P&L
+// but does NOT adjust the account balance. Used during buffered flushes where
+// balance is managed in a single batch write.
+func (s *APIEngineStore) InsertTradeOnly(ctx context.Context, tenantID uuid.UUID, trade *domain.Trade) (bool, error) {
+	return s.submitTradeAndPnL(ctx, trade)
+}
+
+// CostDeltaForTrade returns the signed balance delta resulting from a trade.
 //
 // CostBasis always holds the margin for this trade (= notional/leverage for
 // futures, or full notional for spot). Routing by position side:
@@ -276,7 +296,7 @@ func (s *APIEngineStore) InsertTradeAndUpdatePosition(ctx context.Context, tenan
 //	open  short (sell + short) → deduct margin  (negative)
 //	close long  (sell + long)  → return margin + realised P&L (positive)
 //	close short (buy  + short) → return margin + realised P&L (positive)
-func costDeltaForTrade(trade *domain.Trade) float64 {
+func CostDeltaForTrade(trade *domain.Trade) float64 {
 	ps := trade.PositionSide
 	if ps == "" {
 		ps = domain.PositionSideLong // default for spot trades

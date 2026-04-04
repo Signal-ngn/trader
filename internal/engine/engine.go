@@ -90,8 +90,16 @@ type Engine struct {
 	lastPriceMu sync.RWMutex
 	lastPrice   map[string]float64 // symbol → last signal price
 
+	// signalBuf buffers incoming signals per-account and flushes them after a
+	// quiet period, processing closes before opens.
+	signalBuf *signalBuffer
+
 	// (No in-memory daily loss counter — queried from DB on each check so it
 	// survives restarts and reflects trades from all sources, not just the engine.)
+
+	// fetchTradingConfigsFn is the function used to fetch trading configs.
+	// Defaults to fetchTradingConfigs; overridden in tests.
+	fetchTradingConfigsFn func(ctx context.Context, cfg *config.Config) (tradingConfigByProduct, error)
 
 	logger zerolog.Logger
 }
@@ -113,15 +121,16 @@ func New(cfg *config.Config, repo EngineStore, publisher TradePublisher) *Engine
 	}
 
 	return &Engine{
-		cfg:       cfg,
-		repo:      repo,
-		exchange:  ex,
-		publisher: publisher,
-		posState:  make(map[string]*PositionState),
-		cooldown:  make(map[cooldownKey]time.Time),
-		conflict:  make(map[string]string),
-		lastPrice: make(map[string]float64),
-		logger:    log.With().Str("component", "engine").Logger(),
+		cfg:                   cfg,
+		repo:                  repo,
+		exchange:              ex,
+		publisher:             publisher,
+		posState:              make(map[string]*PositionState),
+		cooldown:              make(map[cooldownKey]time.Time),
+		conflict:              make(map[string]string),
+		lastPrice:             make(map[string]float64),
+		fetchTradingConfigsFn: fetchTradingConfigs,
+		logger:                log.With().Str("component", "engine").Logger(),
 	}
 }
 
@@ -213,6 +222,10 @@ func (e *Engine) Start(ctx context.Context) error {
 		return nil
 	}
 
+	// Initialise signal buffer for burst handling.
+	e.signalBuf = newSignalBuffer(ctx, 5*time.Second, e.flushAccountSignals)
+	e.logger.Info().Dur("timeout", 5*time.Second).Msg("signal burst buffer initialised")
+
 	// Start allowlist refresh goroutine.
 	go e.startAllowlistRefresher(ctx)
 
@@ -221,6 +234,9 @@ func (e *Engine) Start(ctx context.Context) error {
 
 	// Connect to NGS and run signal loop (blocks until ctx cancelled).
 	e.runSignalLoop(ctx)
+
+	// Flush any remaining buffered signals on shutdown.
+	e.signalBuf.Stop()
 
 	e.logger.Info().Msg("trading engine stopped")
 	return nil

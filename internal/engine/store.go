@@ -40,6 +40,12 @@ type EngineStore interface {
 	// (false, nil) on duplicate (idempotent), (false, err) on failure.
 	InsertTradeAndUpdatePosition(ctx context.Context, tenantID uuid.UUID, trade *domain.Trade) (bool, error)
 
+	// InsertTradeOnly records a trade via the platform API and increments
+	// daily P&L but does NOT adjust the account balance. Used during
+	// buffered flushes where balance is managed in a single batch.
+	// Returns (true, nil) on success, (false, nil) on duplicate, (false, err) on failure.
+	InsertTradeOnly(ctx context.Context, tenantID uuid.UUID, trade *domain.Trade) (bool, error)
+
 	// GetAccountBalance returns the current USD balance for the account, or nil
 	// when no balance record exists.
 	GetAccountBalance(ctx context.Context, tenantID uuid.UUID, accountID, currency string) (*float64, error)

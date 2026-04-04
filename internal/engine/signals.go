@@ -465,6 +465,11 @@ func (e *Engine) handleSignal(ctx context.Context, msg *nats.Msg) {
 				continue
 			}
 		}
-		e.processSignal(ctx, signal, product, strategy, accountID)
+		e.signalBuf.Add(bufferedSignal{
+			signal:    signal,
+			product:   product,
+			strategy:  strategy,
+			accountID: accountID,
+		})
 	}
 }

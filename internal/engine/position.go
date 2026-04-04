@@ -31,7 +31,7 @@ func (e *Engine) processSignal(ctx context.Context, signal SignalPayload, produc
 	}
 
 	// Fetch trading config for this account+product to get market type and leverage.
-	tradingConfigs, err := fetchTradingConfigs(ctx, e.cfg)
+	tradingConfigs, err := e.fetchTradingConfigsFn(ctx, e.cfg)
 	if err != nil {
 		logger.Error().Err(err).Msg("failed to fetch trading configs, skipping signal")
 		return
