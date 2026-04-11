@@ -75,6 +75,7 @@ func (e *Engine) evaluatePositions(ctx context.Context) error {
 				e.logger.Warn().Err(err).Str("key", key).Msg("failed to delete orphaned position state")
 			}
 			delete(e.posState, key)
+			e.onConvictionPositionClose(ps.AccountID, ps.Symbol)
 			e.conflictMu.Lock()
 			delete(e.conflict, key)
 			e.conflictMu.Unlock()

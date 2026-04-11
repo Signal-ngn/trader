@@ -266,6 +266,9 @@ func (e *Engine) executeCloseTradeOnly(ctx context.Context, ps *PositionState, c
 	delete(e.posState, posKey(ps.AccountID, ps.Symbol))
 	e.posStateMu.Unlock()
 
+	// Destroy conviction scorer for the closed position.
+	e.onConvictionPositionClose(ps.AccountID, ps.Symbol)
+
 	e.conflictMu.Lock()
 	delete(e.conflict, posKey(ps.AccountID, ps.Symbol))
 	e.conflictMu.Unlock()
@@ -550,6 +553,9 @@ func (e *Engine) processOpenBatched(ctx context.Context, sig bufferedSignal, loc
 		e.posStateMu.Lock()
 		e.posState[posKey(sig.accountID, sig.product)] = ps
 		e.posStateMu.Unlock()
+
+		// Create conviction scorer for the new position.
+		e.onConvictionPositionOpen(ps)
 	}
 
 	return required, nil

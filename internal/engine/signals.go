@@ -343,6 +343,11 @@ func (e *Engine) runSignalLoop(ctx context.Context) {
 			continue
 		}
 
+		// Subscribe to 15M candles for conviction evaluation.
+		if err := e.subscribeToCandleUpdates(ctx, nc); err != nil {
+			e.logger.Warn().Err(err).Msg("failed to subscribe to 15M candles for conviction")
+		}
+
 		// Block until context is cancelled or connection drops.
 		<-ctx.Done()
 		_ = sub.Unsubscribe()

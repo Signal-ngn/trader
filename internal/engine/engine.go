@@ -97,6 +97,10 @@ type Engine struct {
 	// (No in-memory daily loss counter — queried from DB on each check so it
 	// survives restarts and reflects trades from all sources, not just the engine.)
 
+	// conviction manages per-position ConvictionScorers for 15M conviction exits.
+	// nil when conviction is disabled (threshold=0).
+	conviction *convictionManager
+
 	// fetchTradingConfigsFn is the function used to fetch trading configs.
 	// Defaults to fetchTradingConfigs; overridden in tests.
 	fetchTradingConfigsFn func(ctx context.Context, cfg *config.Config) (tradingConfigByProduct, error)
@@ -120,6 +124,12 @@ func New(cfg *config.Config, repo EngineStore, publisher TradePublisher) *Engine
 		ex = NewNoopExchange(cfg)
 	}
 
+	// Initialize conviction manager if thresholds are configured.
+	var cm *convictionManager
+	if cfg.ConvictionExitThreshold > 0 {
+		cm = newConvictionManager(cfg.ConvictionExitThreshold, cfg.ConvictionTightenThreshold)
+	}
+
 	return &Engine{
 		cfg:                   cfg,
 		repo:                  repo,
@@ -129,6 +139,7 @@ func New(cfg *config.Config, repo EngineStore, publisher TradePublisher) *Engine
 		cooldown:              make(map[cooldownKey]time.Time),
 		conflict:              make(map[string]string),
 		lastPrice:             make(map[string]float64),
+		conviction:            cm,
 		fetchTradingConfigsFn: fetchTradingConfigs,
 		logger:                log.With().Str("component", "engine").Logger(),
 	}
@@ -221,6 +232,9 @@ func (e *Engine) Start(ctx context.Context) error {
 		e.logger.Error().Err(err).Msg("failed to load startup state — engine aborted")
 		return nil
 	}
+
+	// Pre-warm conviction scorers for open positions.
+	e.preWarmConvictionScorers(ctx)
 
 	// Initialise signal buffer for burst handling.
 	e.signalBuf = newSignalBuffer(ctx, 5*time.Second, e.flushAccountSignals)

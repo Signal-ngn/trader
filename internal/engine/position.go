@@ -354,6 +354,9 @@ func (e *Engine) handleOpenSignal(ctx context.Context, signal SignalPayload, pro
 		e.posStateMu.Lock()
 		e.posState[posKey(accountID, product)] = ps
 		e.posStateMu.Unlock()
+
+		// Create conviction scorer for the new position.
+		e.onConvictionPositionOpen(ps)
 	}
 }
 
@@ -744,6 +747,9 @@ func (e *Engine) executeCloseTrade(ctx context.Context, ps *PositionState, curre
 	e.posStateMu.Lock()
 	delete(e.posState, posKey(ps.AccountID, ps.Symbol))
 	e.posStateMu.Unlock()
+
+	// Destroy conviction scorer for the closed position.
+	e.onConvictionPositionClose(ps.AccountID, ps.Symbol)
 
 	// Remove from conflict guard.
 	e.conflictMu.Lock()

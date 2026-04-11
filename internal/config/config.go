@@ -56,6 +56,10 @@ type Config struct {
 	SNNATSCredsFile  string  // path to NGS NATS credentials file (optional)
 	BinanceAPIKey    string  // Binance API key (live mode only)
 	BinanceAPISecret string  // Binance API secret (live mode only)
+
+	// Conviction evaluation thresholds
+	ConvictionExitThreshold    float64 // score at or below triggers exit (0 = disabled)
+	ConvictionTightenThreshold float64 // score at or below triggers stop tightening (0 = disabled)
 }
 
 // Load reads configuration from environment variables with .env support.
@@ -98,6 +102,9 @@ func Load() (*Config, error) {
 		SNNATSCredsFile:  os.Getenv("SN_NATS_CREDS_FILE"),
 		BinanceAPIKey:    os.Getenv("BINANCE_API_KEY"),
 		BinanceAPISecret: os.Getenv("BINANCE_API_SECRET"),
+
+		ConvictionExitThreshold:    parseFloat(os.Getenv("CONVICTION_EXIT_THRESHOLD"), 0),
+		ConvictionTightenThreshold: parseFloat(os.Getenv("CONVICTION_TIGHTEN_THRESHOLD"), 0),
 	}
 
 	// Build Cloud SQL connection string if instance is specified
