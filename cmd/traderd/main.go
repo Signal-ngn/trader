@@ -53,7 +53,25 @@ func main() {
 
 	// Start HTTP server immediately so Cloud Run health checks pass.
 	defaultTenantID := uuid.MustParse(middleware.DefaultTenantID.String())
-	srv := api.NewServer(cfg.EnforceAuth, defaultTenantID)
+
+	// Build a static user repository when both SN_API_KEY and TENANT_ID are
+	// configured.  This lets the auth middleware validate incoming Bearer tokens
+	// against the known API key and resolve them to the configured tenant.
+	var userRepo middleware.UserRepository
+	if cfg.SNAPIKey != "" && cfg.TenantID != "" {
+		apiKeyUUID, err := uuid.Parse(cfg.SNAPIKey)
+		if err != nil {
+			log.Fatal().Err(err).Msg("SN_API_KEY is not a valid UUID")
+		}
+		tenantUUID, err := uuid.Parse(cfg.TenantID)
+		if err != nil {
+			log.Fatal().Err(err).Msg("TENANT_ID is not a valid UUID")
+		}
+		userRepo = middleware.NewStaticUserRepo(apiKeyUUID, tenantUUID)
+		log.Info().Str("tenant_id", tenantUUID.String()).Msg("static user repository configured")
+	}
+
+	srv := api.NewServer(userRepo, cfg.EnforceAuth, defaultTenantID)
 	httpServer := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,
 		Handler: srv.Router(),

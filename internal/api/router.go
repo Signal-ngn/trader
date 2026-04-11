@@ -16,14 +16,17 @@ import (
 
 // Server holds the HTTP server dependencies.
 type Server struct {
+	userRepo       middleware.UserRepository
 	enforceAuth    bool
 	defaultTID     uuid.UUID
 	streamRegistry *StreamRegistry
 }
 
-// NewServer creates a new API server.
-func NewServer(enforceAuth bool, defaultTenantID uuid.UUID) *Server {
+// NewServer creates a new API server. userRepo may be nil, in which case the
+// auth middleware falls back to the default tenant for every request.
+func NewServer(userRepo middleware.UserRepository, enforceAuth bool, defaultTenantID uuid.UUID) *Server {
 	return &Server{
+		userRepo:       userRepo,
 		enforceAuth:    enforceAuth,
 		defaultTID:     defaultTenantID,
 		streamRegistry: NewStreamRegistry(),
@@ -55,7 +58,7 @@ func (s *Server) Router() http.Handler {
 	r.Get("/health", s.handleHealth)
 
 	// Auth resolve endpoint — protected by AuthMiddleware
-	authMW := middleware.NewAuthMiddleware(nil, s.enforceAuth, s.defaultTID)
+	authMW := middleware.NewAuthMiddleware(s.userRepo, s.enforceAuth, s.defaultTID)
 	r.With(authMW).Get("/auth/resolve", s.handleAuthResolve)
 
 	// API v1 routes — all protected by AuthMiddleware
