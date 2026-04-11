@@ -60,6 +60,11 @@ type Config struct {
 	// Conviction evaluation thresholds
 	ConvictionExitThreshold    float64 // score at or below triggers exit (0 = disabled)
 	ConvictionTightenThreshold float64 // score at or below triggers stop tightening (0 = disabled)
+
+	// Grafana Cloud metrics push (optional — disabled when URL is unset)
+	GrafanaCloudRemoteWriteURL string
+	GrafanaCloudUsername       string
+	GrafanaCloudAPIKey         string
 }
 
 // Load reads configuration from environment variables with .env support.
@@ -105,6 +110,10 @@ func Load() (*Config, error) {
 
 		ConvictionExitThreshold:    parseFloat(os.Getenv("CONVICTION_EXIT_THRESHOLD"), 0),
 		ConvictionTightenThreshold: parseFloat(os.Getenv("CONVICTION_TIGHTEN_THRESHOLD"), 0),
+
+		GrafanaCloudRemoteWriteURL: os.Getenv("GRAFANA_CLOUD_REMOTE_WRITE_URL"),
+		GrafanaCloudUsername:       os.Getenv("GRAFANA_CLOUD_USERNAME"),
+		GrafanaCloudAPIKey:         os.Getenv("GRAFANA_CLOUD_API_KEY"),
 	}
 
 	// Build Cloud SQL connection string if instance is specified

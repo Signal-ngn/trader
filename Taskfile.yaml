@@ -180,6 +180,40 @@ tasks:
         -e NATS_URLS=nats://localhost:4222
         trader:latest
 
+  # ─── Grafana Cloud ─────────────────────────────────────────
+  # Reads credentials from GRAFANA_API_URL and GRAFANA_API_KEY env vars,
+  # or from .env.grafana if that file exists.
+
+  grafana:push:
+    desc: Upsert all dashboards in grafana/dashboards/ to Grafana Cloud
+    cmds:
+      - |
+        if [ -f .env.grafana ]; then
+          set -a && source .env.grafana && set +a
+        fi
+        if [ -z "$GRAFANA_API_URL" ] || [ -z "$GRAFANA_API_KEY" ]; then
+          echo "ERROR: GRAFANA_API_URL and GRAFANA_API_KEY must be set (or defined in .env.grafana)" >&2
+          exit 1
+        fi
+        ERRORS=0
+        for DASHBOARD_FILE in grafana/dashboards/*.json; do
+          DASHBOARD=$(cat "$DASHBOARD_FILE")
+          PAYLOAD=$(printf '{"dashboard": %s, "overwrite": true, "folderId": 0}' "$DASHBOARD")
+          STATUS=$(curl -s -o /tmp/grafana_push_out.json -w "%{http_code}" \
+            -X POST "$GRAFANA_API_URL/api/dashboards/db" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $GRAFANA_API_KEY" \
+            -d "$PAYLOAD")
+          if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 300 ]; then
+            DASH_UID=$(python3 -c "import json; d=json.load(open('/tmp/grafana_push_out.json')); print(d.get('uid','?'))")
+            echo "  OK $(basename $DASHBOARD_FILE) -> $GRAFANA_API_URL/d/$DASH_UID"
+          else
+            echo "  FAIL $(basename $DASHBOARD_FILE) (HTTP $STATUS): $(cat /tmp/grafana_push_out.json)" >&2
+            ERRORS=$((ERRORS+1))
+          fi
+        done
+        if [ "$ERRORS" -gt 0 ]; then exit 1; fi
+
   # ─── Deployment ────────────────────────────────────────────
 
   deploy:production:

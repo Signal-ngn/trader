@@ -157,6 +157,7 @@ func (e *Engine) handleCandleMessage(ctx context.Context, msg *nats.Msg) {
 				Str("symbol", ps.Symbol).
 				Int("candles", cs.scorer.CandleCount()).
 				Msg("conviction scorer warming up")
+			recordConvictionWarmup(ps.Symbol, true)
 			return
 		}
 
@@ -168,6 +169,8 @@ func (e *Engine) handleCandleMessage(ctx context.Context, msg *nats.Msg) {
 		}
 
 		score, signals := cs.scorer.Score(posCtx)
+		recordConvictionScore(ps.Symbol, score, signals)
+		recordConvictionWarmup(ps.Symbol, false)
 
 		if score <= e.conviction.exitThreshold {
 			// Log at INFO
@@ -182,6 +185,7 @@ func (e *Engine) handleCandleMessage(ctx context.Context, msg *nats.Msg) {
 				Strs("signals", signalNames).
 				Str("action", "exit").
 				Msg("conviction loss triggered exit")
+			recordConvictionAction(ps.Symbol, "exit")
 
 			// Guard against double-close
 			e.posStateMu.Lock()
@@ -202,6 +206,7 @@ func (e *Engine) handleCandleMessage(ctx context.Context, msg *nats.Msg) {
 				Float64("score", score).
 				Str("action", "tighten").
 				Msg("conviction degraded — tightening stop")
+			recordConvictionAction(ps.Symbol, "tighten")
 
 			e.tightenStop(ctx, ps, ohlcv.Close)
 		} else {
@@ -377,6 +382,7 @@ func (e *Engine) onConvictionPositionClose(accountID, symbol string) {
 		return
 	}
 	e.conviction.destroyScorer(posKey(accountID, symbol))
+	cleanupConvictionMetrics(symbol)
 }
 
 // parseCandleSubject extracts exchange and product from a candle NATS subject.

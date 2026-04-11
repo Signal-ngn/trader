@@ -1,0 +1,311 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "description": "Conviction scorer observability. Monitors per-position conviction scores, active erosion signals, warmup state, and exit/tighten actions triggered by the 15M conviction loop.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "Conviction Score",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+      "description": "Current conviction score per position. 1.0 = full conviction, 0.0 = no conviction. Horizontal lines show the configured exit and tighten thresholds.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "min": 0,
+          "max": 1,
+          "unit": "percentunit"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Exit threshold" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } },
+              { "id": "custom.lineStyle", "value": { "dash": [10, 10], "fill": "dash" } },
+              { "id": "custom.fillOpacity", "value": 0 },
+              { "id": "custom.lineWidth", "value": 1 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Tighten threshold" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } },
+              { "id": "custom.lineStyle", "value": { "dash": [10, 10], "fill": "dash" } },
+              { "id": "custom.fillOpacity", "value": 0 },
+              { "id": "custom.lineWidth", "value": 1 }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 1 },
+      "id": 1,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "min"], "displayMode": "table", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+          "expr": "spot_canvas_conviction_score",
+          "legendFormat": "{{symbol}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Conviction Score by Position",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 11 },
+      "id": 200,
+      "title": "Erosion Signals",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+      "description": "Heatmap of active erosion signals per position. Brighter = higher penalty weight. Each cell represents one of the 8 erosion signals for a given symbol.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "continuous-RdYlGr" },
+          "custom": { "fillOpacity": 80 },
+          "min": 0,
+          "max": 0.25,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.05 },
+              { "color": "orange", "value": 0.1 },
+              { "color": "red", "value": 0.15 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+      "id": 3,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+          "expr": "spot_canvas_conviction_erosion_signal_active",
+          "legendFormat": "{{symbol}} / {{signal}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Erosion Signals (weight when active)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+      "description": "Count of currently active erosion signals per position. Higher count = more conviction erosion.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "stacking": { "mode": "none" } },
+          "min": 0,
+          "max": 8,
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "id": 4,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+          "expr": "count by (symbol) (spot_canvas_conviction_erosion_signal_active > 0)",
+          "legendFormat": "{{symbol}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Active Signal Count by Position",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+      "description": "Supertrend flip is the highest-weight erosion signal (0.25). This panel tracks it independently since a supertrend flip alone can push the score below the tighten threshold.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 20 },
+          "min": 0,
+          "max": 0.25
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "id": 5,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+          "expr": "spot_canvas_conviction_erosion_signal_active{signal=\"supertrend_flip\"}",
+          "legendFormat": "{{symbol}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Supertrend Flip Signal",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 28 },
+      "id": 300,
+      "title": "Actions & State",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+      "description": "Rate of conviction-triggered exits and stop tightenings per symbol.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "unit": "ops"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*exit.*" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*tighten.*" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 29 },
+      "id": 6,
+      "options": {
+        "legend": { "calcs": ["sum"], "displayMode": "table", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+          "expr": "rate(spot_canvas_conviction_actions_total[1h])",
+          "legendFormat": "{{symbol}} {{action}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Conviction Actions Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+      "description": "Cumulative conviction-triggered exits and tightenings since process start.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 0 },
+          "decimals": 0
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*exit.*" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*tighten.*" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 29 },
+      "id": 7,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+          "expr": "spot_canvas_conviction_actions_total",
+          "legendFormat": "{{symbol}} {{action}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Conviction Actions (cumulative)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+      "description": "Shows which position scorers are still warming up (need 26 candles = ~6.5h). 1 = warming, 0 = warm.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 20 },
+          "min": 0,
+          "max": 1,
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 37 },
+      "id": 8,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+          "expr": "spot_canvas_conviction_warmup",
+          "legendFormat": "{{symbol}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Scorer Warmup State",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 38,
+  "tags": [
+    "conviction",
+    "trading",
+    "observability"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-12h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Conviction Scorer Observability",
+  "uid": "conviction-scorer-observability",
+  "version": 1
+}

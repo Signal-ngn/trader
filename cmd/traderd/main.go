@@ -17,6 +17,7 @@ import (
 	"github.com/Signal-ngn/trader/internal/api/middleware"
 	"github.com/Signal-ngn/trader/internal/config"
 	"github.com/Signal-ngn/trader/internal/engine"
+	"github.com/Signal-ngn/trader/internal/metricspush"
 	"github.com/Signal-ngn/trader/internal/platform"
 )
 
@@ -113,6 +114,17 @@ func main() {
 			}
 		}()
 		log.Info().Strs("accounts", cfg.TraderAccounts).Str("mode", cfg.TradingMode).Msg("trading engine starting")
+	}
+
+	// Start Grafana Cloud metrics push (optional).
+	if cfg.GrafanaCloudRemoteWriteURL != "" {
+		pusher := metricspush.New(metricspush.Config{
+			URL:      cfg.GrafanaCloudRemoteWriteURL,
+			Username: cfg.GrafanaCloudUsername,
+			APIKey:   cfg.GrafanaCloudAPIKey,
+			Interval: 60 * time.Second,
+		})
+		go pusher.Start(ctx)
 	}
 
 	// Wait for shutdown signal
