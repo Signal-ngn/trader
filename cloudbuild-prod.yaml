@@ -68,7 +68,7 @@ steps:
       - --port=8080
       - --allow-unauthenticated
       - --set-env-vars=ENVIRONMENT=production,LOG_LEVEL=info,ENFORCE_AUTH=true,TRADING_ENABLED=true,TRADING_MODE=paper,TENANT_ID=${_TENANT_ID},TRADER_ACCOUNTS=${_TRADER_ACCOUNTS},FIRESTORE_PROJECT_ID=${PROJECT_ID},PORTFOLIO_SIZE=10000,POSITION_SIZE_PCT=10,POSITION_SIZE_MAX_PCT=20,MIN_POSITION_SIZE=50
-      - --set-secrets=NATS_URLS=signalngn-prod-nats-url:latest,NATS_CREDS=signalngn-prod-nats-creds:latest,SN_API_KEY=signalngn-prod-sn-api-key:latest,GRAFANA_CLOUD_REMOTE_WRITE_URL=grafana-cloud-remote-write-url:latest,GRAFANA_CLOUD_USERNAME=grafana-cloud-username:latest,GRAFANA_CLOUD_API_KEY=grafana-cloud-api-key:latest
+      - --set-secrets=NATS_URLS=signalngn-prod-nats-url:latest,NATS_CREDS=signalngn-prod-nats-creds:latest,SN_API_KEY=signalngn-prod-sn-api-key:latest,GRAFANA_CLOUD_REMOTE_WRITE_URL=signalngn-prod-grafana-remote-write-url:latest,GRAFANA_CLOUD_USERNAME=signalngn-prod-grafana-username:latest,GRAFANA_CLOUD_API_KEY=signalngn-prod-grafana-api-key:latest
     waitFor:
       - push
 
