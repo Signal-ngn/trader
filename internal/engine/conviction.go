@@ -21,13 +21,14 @@ const convictionCandleSubject = "candles.*.*.FIFTEEN_MINUTES"
 // candlePayload matches the JSON structure published by the ingestion server.
 type candlePayload struct {
 	Candle struct {
-		Exchange  string  `json:"exchange"`
-		ProductID string  `json:"product_id"`
-		Open      float64 `json:"open"`
-		High      float64 `json:"high"`
-		Low       float64 `json:"low"`
-		Close     float64 `json:"close"`
-		Volume    float64 `json:"volume"`
+		Exchange  string    `json:"exchange"`
+		ProductID string    `json:"product_id"`
+		Timestamp time.Time `json:"timestamp"`
+		Open      float64   `json:"open"`
+		High      float64   `json:"high"`
+		Low       float64   `json:"low"`
+		Close     float64   `json:"close"`
+		Volume    float64   `json:"volume"`
 	} `json:"candle"`
 	IsComplete bool `json:"is_complete"`
 }
@@ -36,6 +37,30 @@ type candlePayload struct {
 type convictionState struct {
 	scorer   *risk.ConvictionScorer
 	entryATR float64
+
+	// exchange is the authoritative exchange this scorer consumes candles from.
+	// Messages from any other exchange are rejected to prevent cross-feed contamination
+	// (e.g. binance/coinbase/kraken/okx all publishing the same 15M window with
+	// slightly different closes, or a backfill republishing a stale candle).
+	exchange string
+
+	// lastCandleTime is the timestamp of the most recent candle fed to the scorer.
+	// Candles with a timestamp <= this value are rejected (late / out-of-order / backfill).
+	lastCandleTime time.Time
+}
+
+// shouldProcessCandle reports whether a candle with the given exchange and timestamp
+// should be fed to this scorer. It rejects cross-exchange messages and stale/duplicate
+// timestamps. Zero-valued exchange on the scorer disables the exchange check (for
+// backwards compatibility with fallback code paths where exchange is unknown).
+func (cs *convictionState) shouldProcessCandle(exchange string, ts time.Time) bool {
+	if cs.exchange != "" && exchange != cs.exchange {
+		return false
+	}
+	if !cs.lastCandleTime.IsZero() && !ts.After(cs.lastCandleTime) {
+		return false
+	}
+	return true
 }
 
 // convictionManager manages per-position ConvictionScorers.
@@ -55,15 +80,41 @@ func newConvictionManager(exitThreshold, tightenThreshold float64) *convictionMa
 	}
 }
 
-// createScorer creates a new ConvictionScorer for a position.
-func (cm *convictionManager) createScorer(key string) *convictionState {
+// createScorer creates a new ConvictionScorer for a position, bound to the
+// given exchange. Subsequent candle messages from other exchanges are ignored.
+func (cm *convictionManager) createScorer(key, exchange string) *convictionState {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cs := &convictionState{
-		scorer: risk.NewConvictionScorer(),
+		scorer:   risk.NewConvictionScorer(),
+		exchange: exchange,
 	}
 	cm.scorers[key] = cs
 	return cs
+}
+
+// feedCandle feeds a candle to the scorer for key if it passes shouldProcessCandle.
+// Returns the updated state (with lastCandleTime advanced) and true if accepted, or
+// nil and false if the candle was rejected (or no scorer exists for key).
+func (cm *convictionManager) feedCandle(key string, payload candlePayload) (*convictionState, bool) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cs, ok := cm.scorers[key]
+	if !ok {
+		return nil, false
+	}
+	if !cs.shouldProcessCandle(payload.Candle.Exchange, payload.Candle.Timestamp) {
+		return nil, false
+	}
+	cs.scorer.Update(risk.OHLCV{
+		Open:   payload.Candle.Open,
+		High:   payload.Candle.High,
+		Low:    payload.Candle.Low,
+		Close:  payload.Candle.Close,
+		Volume: payload.Candle.Volume,
+	})
+	cs.lastCandleTime = payload.Candle.Timestamp
+	return cs, true
 }
 
 // markEntry captures the entry ATR for a position's scorer.
@@ -120,13 +171,6 @@ func (e *Engine) handleCandleMessage(ctx context.Context, msg *nats.Msg) {
 	}
 
 	product := payload.Candle.ProductID
-	ohlcv := risk.OHLCV{
-		Open:   payload.Candle.Open,
-		High:   payload.Candle.High,
-		Low:    payload.Candle.Low,
-		Close:  payload.Candle.Close,
-		Volume: payload.Candle.Volume,
-	}
 
 	// Find open positions for this product and feed the candle to their scorers.
 	e.posStateMu.RLock()
@@ -144,12 +188,20 @@ func (e *Engine) handleCandleMessage(ctx context.Context, msg *nats.Msg) {
 
 	for _, ps := range matching {
 		key := posKey(ps.AccountID, ps.Symbol)
-		cs := e.conviction.getScorer(key)
-		if cs == nil {
+
+		// feedCandle filters out messages from other exchanges and stale/duplicate
+		// timestamps, and only feeds the scorer if the candle is accepted.
+		cs, accepted := e.conviction.feedCandle(key, payload)
+		if !accepted {
 			continue
 		}
-
-		cs.scorer.Update(ohlcv)
+		ohlcv := risk.OHLCV{
+			Open:   payload.Candle.Open,
+			High:   payload.Candle.High,
+			Low:    payload.Candle.Low,
+			Close:  payload.Candle.Close,
+			Volume: payload.Candle.Volume,
+		}
 
 		// Don't evaluate if scorer is cold
 		if !cs.scorer.IsWarm() {
@@ -293,14 +345,14 @@ func (e *Engine) preWarmConvictionScorers(ctx context.Context) {
 func (e *Engine) warmScorer(ctx context.Context, ps *PositionState) {
 	key := posKey(ps.AccountID, ps.Symbol)
 
-	// Create scorer for this position
-	cs := e.conviction.createScorer(key)
-
 	exchange := e.exchangeForProduct(ps.Symbol)
 	if exchange == "" {
-		e.logger.Warn().Str("symbol", ps.Symbol).Msg("conviction warm: exchange unknown, cold start")
+		e.logger.Warn().Str("symbol", ps.Symbol).Msg("conviction warm: exchange unknown, skipping scorer")
 		return
 	}
+
+	// Create scorer for this position, bound to the resolved exchange.
+	cs := e.conviction.createScorer(key, exchange)
 
 	candles, err := fetchWarmupCandles(ctx, e.cfg, exchange, ps.Symbol, 30)
 	if err != nil {
@@ -370,8 +422,13 @@ func (e *Engine) onConvictionPositionOpen(ps *PositionState) {
 	if e.conviction == nil || !e.conviction.enabled() {
 		return
 	}
+	exchange := e.exchangeForProduct(ps.Symbol)
+	if exchange == "" {
+		e.logger.Warn().Str("symbol", ps.Symbol).Msg("conviction: exchange unknown, skipping scorer init")
+		return
+	}
 	key := posKey(ps.AccountID, ps.Symbol)
-	cs := e.conviction.createScorer(key)
+	cs := e.conviction.createScorer(key, exchange)
 	cs.entryATR = cs.scorer.MarkEntry()
 }
 
