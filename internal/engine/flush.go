@@ -555,7 +555,7 @@ func (e *Engine) processOpenBatched(ctx context.Context, sig bufferedSignal, loc
 		e.posStateMu.Unlock()
 
 		// Create conviction scorer for the new position.
-		e.onConvictionPositionOpen(ps)
+		e.onConvictionPositionOpen(ctx, ps)
 	}
 
 	return required, nil

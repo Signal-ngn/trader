@@ -356,7 +356,7 @@ func (e *Engine) handleOpenSignal(ctx context.Context, signal SignalPayload, pro
 		e.posStateMu.Unlock()
 
 		// Create conviction scorer for the new position.
-		e.onConvictionPositionOpen(ps)
+		e.onConvictionPositionOpen(ctx, ps)
 	}
 }
 

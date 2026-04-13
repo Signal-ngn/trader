@@ -1,8 +1,15 @@
 package engine
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/Signal-ngn/risk"
+	"github.com/rs/zerolog"
+
+	"github.com/Signal-ngn/trader/internal/config"
 )
 
 // newBinanceState returns a convictionManager with a single scorer bound to
@@ -219,6 +226,132 @@ func TestFeedCandle_WarmupCountsDistinctWindowsNotMessages(t *testing.T) {
 	}
 	if !cs.scorer.IsWarm() {
 		t.Fatal("scorer must be warm after 26 distinct windows")
+	}
+}
+
+// generatedWarmupCandles returns n candles with a gentle uptrend so ATR is
+// nonzero after replay. Using trivially-equal candles would leave ATR at 0.
+func generatedWarmupCandles(n int) []risk.OHLCV {
+	out := make([]risk.OHLCV, n)
+	price := 100.0
+	for i := range out {
+		spread := price * 0.005
+		out[i] = risk.OHLCV{
+			Open:   price,
+			High:   price + spread,
+			Low:    price - spread,
+			Close:  price + 0.1,
+			Volume: 100,
+		}
+		price = out[i].Close
+	}
+	return out
+}
+
+// newConvictionTestEngine builds a minimal Engine wired for conviction tests:
+// conviction manager enabled, one product in the allowlist pinned to binance,
+// and an injectable fetchWarmupCandlesFn.
+func newConvictionTestEngine(fetcher func(ctx context.Context, cfg *config.Config, exchange, product string, limit int) ([]risk.OHLCV, error)) *Engine {
+	e := &Engine{
+		cfg:                  &config.Config{TradingMode: "paper"},
+		posState:             make(map[string]*PositionState),
+		cooldown:             make(map[cooldownKey]time.Time),
+		conflict:             make(map[string]string),
+		lastPrice:            make(map[string]float64),
+		conviction:           newConvictionManager(0.35, 0.55),
+		fetchWarmupCandlesFn: fetcher,
+		logger:               zerolog.Nop(),
+		allowlist: signalAllowlist{
+			signalKey{exchange: "binance", product: "SOL-USD", granularity: "FOUR_HOURS", strategy: "hts"}: struct{}{},
+		},
+	}
+	return e
+}
+
+// TestOnConvictionPositionOpen_PreWarmsAndMarksEntry asserts that a runtime
+// position open results in a scorer that is already warm and has a non-zero
+// entryATR — so the very next 15M candle can be scored, rather than waiting
+// 6.5h for 26 live bars to flow in. This is the bug the ENA-USD diagnosis
+// exposed: before the fix, new positions sat cold indefinitely.
+func TestOnConvictionPositionOpen_PreWarmsAndMarksEntry(t *testing.T) {
+	e := newConvictionTestEngine(func(ctx context.Context, cfg *config.Config, exchange, product string, limit int) ([]risk.OHLCV, error) {
+		if exchange != "binance" || product != "SOL-USD" || limit != 30 {
+			t.Fatalf("unexpected fetch args: exchange=%q product=%q limit=%d", exchange, product, limit)
+		}
+		return generatedWarmupCandles(limit), nil
+	})
+
+	ps := &PositionState{
+		AccountID:  "acc",
+		Symbol:     "SOL-USD",
+		Side:       "long",
+		EntryPrice: 100,
+		OpenedAt:   time.Now().UTC(),
+	}
+	e.onConvictionPositionOpen(context.Background(), ps)
+
+	cs := e.conviction.getScorer(posKey("acc", "SOL-USD"))
+	if cs == nil {
+		t.Fatal("expected scorer to be created for runtime open")
+	}
+	if !cs.scorer.IsWarm() {
+		t.Fatalf("expected scorer warm after pre-warm; count=%d", cs.scorer.CandleCount())
+	}
+	if cs.entryATR <= 0 {
+		t.Fatalf("expected entryATR > 0 after warmup; got %v", cs.entryATR)
+	}
+	if cs.exchange != "binance" {
+		t.Fatalf("expected exchange=binance; got %q", cs.exchange)
+	}
+}
+
+// TestOnConvictionPositionOpen_FetchFailureStillSeedsScorer asserts that when
+// the platform API fails, we still create a scorer (bound to the resolved
+// exchange) so that the live NATS candle stream can feed it — and that
+// entryATR stays 0 rather than picking up a poisoned value. This guards
+// against a regression where a fetch error silently disables the scorer.
+func TestOnConvictionPositionOpen_FetchFailureStillSeedsScorer(t *testing.T) {
+	e := newConvictionTestEngine(func(ctx context.Context, cfg *config.Config, exchange, product string, limit int) ([]risk.OHLCV, error) {
+		return nil, errors.New("boom")
+	})
+
+	ps := &PositionState{
+		AccountID: "acc",
+		Symbol:    "SOL-USD",
+		Side:      "long",
+		OpenedAt:  time.Now().UTC(),
+	}
+	e.onConvictionPositionOpen(context.Background(), ps)
+
+	cs := e.conviction.getScorer(posKey("acc", "SOL-USD"))
+	if cs == nil {
+		t.Fatal("scorer must still be created on fetch failure")
+	}
+	if cs.exchange != "binance" {
+		t.Fatalf("scorer must be bound to resolved exchange; got %q", cs.exchange)
+	}
+	if cs.scorer.IsWarm() {
+		t.Fatal("scorer must be cold after fetch failure")
+	}
+	if cs.entryATR != 0 {
+		t.Fatalf("entryATR must be 0 when pre-warm fails; got %v", cs.entryATR)
+	}
+}
+
+// TestOnConvictionPositionOpen_ExchangeUnknown asserts that when a position's
+// symbol has no allowlist entry, no scorer is created (rather than creating
+// one with empty exchange that would then accept candles from any exchange).
+func TestOnConvictionPositionOpen_ExchangeUnknown(t *testing.T) {
+	e := newConvictionTestEngine(func(ctx context.Context, cfg *config.Config, exchange, product string, limit int) ([]risk.OHLCV, error) {
+		t.Fatal("fetcher must not be called when exchange is unknown")
+		return nil, nil
+	})
+
+	ps := &PositionState{AccountID: "acc", Symbol: "UNKNOWN-USD", Side: "long"}
+	e.onConvictionPositionOpen(context.Background(), ps)
+
+	if cs := e.conviction.getScorer(posKey("acc", "UNKNOWN-USD")); cs != nil {
+		t.Fatalf("no scorer should be created when exchange unknown; got %+v", cs)
 	}
 }
 

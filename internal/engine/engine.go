@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Signal-ngn/risk"
 	"github.com/google/uuid"
 	nats "github.com/nats-io/nats.go"
 	"github.com/rs/zerolog"
@@ -105,6 +106,10 @@ type Engine struct {
 	// Defaults to fetchTradingConfigs; overridden in tests.
 	fetchTradingConfigsFn func(ctx context.Context, cfg *config.Config) (tradingConfigByProduct, error)
 
+	// fetchWarmupCandlesFn fetches recent 15M candles for conviction scorer pre-warming.
+	// Defaults to fetchWarmupCandles; overridden in tests.
+	fetchWarmupCandlesFn func(ctx context.Context, cfg *config.Config, exchange, product string, limit int) ([]risk.OHLCV, error)
+
 	logger zerolog.Logger
 }
 
@@ -141,6 +146,7 @@ func New(cfg *config.Config, repo EngineStore, publisher TradePublisher) *Engine
 		lastPrice:             make(map[string]float64),
 		conviction:            cm,
 		fetchTradingConfigsFn: fetchTradingConfigs,
+		fetchWarmupCandlesFn:  fetchWarmupCandles,
 		logger:                log.With().Str("component", "engine").Logger(),
 	}
 }

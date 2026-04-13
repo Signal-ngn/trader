@@ -203,14 +203,25 @@ func (e *Engine) handleCandleMessage(ctx context.Context, msg *nats.Msg) {
 			Volume: payload.Candle.Volume,
 		}
 
-		// Don't evaluate if scorer is cold
+		// Don't evaluate if scorer is cold.
 		if !cs.scorer.IsWarm() {
-			e.logger.Debug().
-				Str("symbol", ps.Symbol).
-				Int("candles", cs.scorer.CandleCount()).
-				Msg("conviction scorer warming up")
+			count := cs.scorer.CandleCount()
 			recordConvictionWarmup(ps.Symbol, true)
-			return
+			// Emit an INFO milestone at halfway and one-off-from-warm so stalls
+			// are visible without enabling DEBUG globally.
+			if count == 13 || count == 25 {
+				e.logger.Info().
+					Str("symbol", ps.Symbol).
+					Str("exchange", cs.exchange).
+					Int("candles", count).
+					Msg("conviction scorer warming up")
+			} else {
+				e.logger.Debug().
+					Str("symbol", ps.Symbol).
+					Int("candles", count).
+					Msg("conviction scorer warming up")
+			}
+			continue
 		}
 
 		posCtx := risk.PositionContext{
@@ -341,7 +352,8 @@ func (e *Engine) preWarmConvictionScorers(ctx context.Context) {
 	e.logger.Info().Int("positions", len(states)).Msg("pre-warmed conviction scorers")
 }
 
-// warmScorer fetches 30 recent 15M candles from the platform API and feeds them to the scorer.
+// warmScorer creates a scorer for the position and pre-warms it from the platform API.
+// Used at engine startup to restore scorers for already-open positions.
 func (e *Engine) warmScorer(ctx context.Context, ps *PositionState) {
 	key := posKey(ps.AccountID, ps.Symbol)
 
@@ -354,24 +366,38 @@ func (e *Engine) warmScorer(ctx context.Context, ps *PositionState) {
 	// Create scorer for this position, bound to the resolved exchange.
 	cs := e.conviction.createScorer(key, exchange)
 
-	candles, err := fetchWarmupCandles(ctx, e.cfg, exchange, ps.Symbol, 30)
-	if err != nil {
-		e.logger.Warn().Err(err).Str("symbol", ps.Symbol).Msg("conviction warm: API fetch failed, cold start")
-		return
-	}
+	candlesFed := e.prewarmScorer(ctx, cs, exchange, ps.Symbol)
 
+	// Mark entry with ATR from the (possibly) warmed-up scorer.
+	cs.entryATR = cs.scorer.MarkEntry()
+
+	// Emit the warm-up gauge immediately so Grafana can distinguish a scorer
+	// that exists-but-isn't-warm from one that was never created at all.
+	recordConvictionWarmup(ps.Symbol, !cs.scorer.IsWarm())
+
+	e.logger.Info().
+		Str("symbol", ps.Symbol).
+		Str("exchange", exchange).
+		Int("candles_fed", candlesFed).
+		Bool("warm", cs.scorer.IsWarm()).
+		Float64("entry_atr", cs.entryATR).
+		Msg("conviction scorer initialized (startup)")
+}
+
+// prewarmScorer fetches 30 recent 15M candles from the platform API and feeds
+// them into an existing scorer. Returns the number of candles actually fed
+// (0 if the API call failed — the scorer will be cold and warm up from live
+// NATS candles instead).
+func (e *Engine) prewarmScorer(ctx context.Context, cs *convictionState, exchange, product string) int {
+	candles, err := e.fetchWarmupCandlesFn(ctx, e.cfg, exchange, product, 30)
+	if err != nil {
+		e.logger.Warn().Err(err).Str("symbol", product).Msg("conviction warm: API fetch failed, cold start")
+		return 0
+	}
 	for _, c := range candles {
 		cs.scorer.Update(c)
 	}
-
-	// Mark entry with ATR from the warmed-up scorer
-	cs.entryATR = cs.scorer.MarkEntry()
-
-	e.logger.Debug().
-		Str("symbol", ps.Symbol).
-		Int("candles_fed", len(candles)).
-		Bool("warm", cs.scorer.IsWarm()).
-		Msg("conviction scorer pre-warmed")
+	return len(candles)
 }
 
 // fetchWarmupCandles fetches recent 15M candles from the platform API.
@@ -417,8 +443,11 @@ func fetchWarmupCandles(ctx context.Context, cfg *config.Config, exchange, produ
 }
 
 // onPositionOpen is called when a new position is opened.
-// Creates a ConvictionScorer and marks entry.
-func (e *Engine) onConvictionPositionOpen(ps *PositionState) {
+// Creates a ConvictionScorer, pre-warms it from the platform API, and captures
+// entry ATR. Pre-warming is synchronous so the scorer can evaluate conviction
+// on the very next 15M candle instead of waiting ~6.5h for live candles to
+// reach the 26-bar warm-up threshold.
+func (e *Engine) onConvictionPositionOpen(ctx context.Context, ps *PositionState) {
 	if e.conviction == nil || !e.conviction.enabled() {
 		return
 	}
@@ -429,7 +458,19 @@ func (e *Engine) onConvictionPositionOpen(ps *PositionState) {
 	}
 	key := posKey(ps.AccountID, ps.Symbol)
 	cs := e.conviction.createScorer(key, exchange)
+
+	candlesFed := e.prewarmScorer(ctx, cs, exchange, ps.Symbol)
 	cs.entryATR = cs.scorer.MarkEntry()
+
+	recordConvictionWarmup(ps.Symbol, !cs.scorer.IsWarm())
+
+	e.logger.Info().
+		Str("symbol", ps.Symbol).
+		Str("exchange", exchange).
+		Int("candles_fed", candlesFed).
+		Bool("warm", cs.scorer.IsWarm()).
+		Float64("entry_atr", cs.entryATR).
+		Msg("conviction scorer initialized (runtime open)")
 }
 
 // onPositionClose is called when a position is closed.
