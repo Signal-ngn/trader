@@ -16,7 +16,7 @@ import (
 // "binance" for the given key, ready to receive candles.
 func newBinanceState(t *testing.T, key string) (*convictionManager, *convictionState) {
 	t.Helper()
-	cm := newConvictionManager(0.35, 0.55)
+	cm := newConvictionManager(0.35, 0.55, 0, 0)
 	cs := cm.createScorer(key, "binance")
 	return cm, cs
 }
@@ -258,7 +258,8 @@ func newConvictionTestEngine(fetcher func(ctx context.Context, cfg *config.Confi
 		cooldown:             make(map[cooldownKey]time.Time),
 		conflict:             make(map[string]string),
 		lastPrice:            make(map[string]float64),
-		conviction:           newConvictionManager(0.35, 0.55),
+		forecasts:            make(map[string]*cachedForecast),
+		conviction:           newConvictionManager(0.35, 0.55, 0, 0),
 		fetchWarmupCandlesFn: fetcher,
 		logger:               zerolog.Nop(),
 		allowlist: signalAllowlist{
@@ -358,7 +359,7 @@ func TestOnConvictionPositionOpen_ExchangeUnknown(t *testing.T) {
 // TestCreateScorer_BindsExchange asserts that createScorer records the
 // exchange on the state so later candle filtering can use it.
 func TestCreateScorer_BindsExchange(t *testing.T) {
-	cm := newConvictionManager(0.35, 0.55)
+	cm := newConvictionManager(0.35, 0.55, 0, 0)
 	cs := cm.createScorer("acc:SOL-USD", "binance")
 	if cs.exchange != "binance" {
 		t.Fatalf("expected exchange=binance, got %q", cs.exchange)

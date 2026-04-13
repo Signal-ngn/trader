@@ -32,7 +32,7 @@ require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/firestore v1.21.0
 	cloud.google.com/go/longrunning v0.7.0 // indirect
-	github.com/Signal-ngn/risk v0.1.0
+	github.com/Signal-ngn/risk v0.3.0
 	github.com/clipperhouse/displaywidth v0.6.2 // indirect
 	github.com/clipperhouse/stringish v0.1.1 // indirect
 	github.com/clipperhouse/uax29/v2 v2.3.0 // indirect

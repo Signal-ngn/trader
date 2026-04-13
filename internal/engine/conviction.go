@@ -18,6 +18,70 @@ import (
 // convictionCandleSubject is the NATS wildcard for 15M candles.
 const convictionCandleSubject = "candles.*.*.FIFTEEN_MINUTES"
 
+// forecastKey builds the map key used for the per-product forecast cache.
+// Forecasts are product-level (one per HTS 4H evaluation) so the key deliberately
+// excludes accountID — every account trading the same product shares the same
+// forecast snapshot.
+func forecastKey(exchange, product string) string {
+	return exchange + "/" + product
+}
+
+// cachedForecast is the engine-local wrapper that pairs a wire-deserialised
+// SignalForecast with the candle-close timestamp of the signal that produced
+// it. The timestamp is what the risk library uses to compute ForecastAge at
+// each 15M tick.
+type cachedForecast struct {
+	forecast  SignalForecast
+	timestamp time.Time
+}
+
+// currentForecast returns a copy of the cached forecast for the given
+// (exchange, product) pair, or nil when no forecast has been observed.
+func (e *Engine) currentForecast(exchange, product string) *cachedForecast {
+	e.forecastMu.RLock()
+	defer e.forecastMu.RUnlock()
+	f, ok := e.forecasts[forecastKey(exchange, product)]
+	if !ok {
+		return nil
+	}
+	out := *f
+	return &out
+}
+
+// toForecastSnapshot translates a cached forecast into the risk library's
+// ForecastSnapshot. A nil input yields a zero-value snapshot, which the
+// scorer treats as "no forecast available" and disables all TFT/regime
+// signals — preserving archived behaviour.
+func toForecastSnapshot(c *cachedForecast) risk.ForecastSnapshot {
+	if c == nil {
+		return risk.ForecastSnapshot{}
+	}
+	return risk.ForecastSnapshot{
+		Valid:           c.forecast.Valid,
+		MedianReturnH48: c.forecast.MedianReturn,
+		UncertaintyH48:  c.forecast.Uncertainty,
+		QuantileLowH48:  c.forecast.QuantileLow,
+		QuantileHighH48: c.forecast.QuantileHigh,
+		ConfirmH24:      c.forecast.ConfirmH24,
+		Timestamp:       c.timestamp,
+	}
+}
+
+// toRegimeSnapshot translates the cached regime subset into the risk
+// library's RegimeSnapshot. A nil input yields an empty-State snapshot,
+// which disables the regime-adverse erosion signal.
+func toRegimeSnapshot(c *cachedForecast) risk.RegimeSnapshot {
+	if c == nil {
+		return risk.RegimeSnapshot{}
+	}
+	return risk.RegimeSnapshot{
+		State:          c.forecast.Regime.State,
+		AllowLong:      c.forecast.Regime.AllowLong,
+		AllowShort:     c.forecast.Regime.AllowShort,
+		VolatilityMult: c.forecast.Regime.VolatilityMult,
+	}
+}
+
 // candlePayload matches the JSON structure published by the ingestion server.
 type candlePayload struct {
 	Candle struct {
@@ -37,6 +101,13 @@ type candlePayload struct {
 type convictionState struct {
 	scorer   *risk.ConvictionScorer
 	entryATR float64
+
+	// Entry-time forecast baseline, frozen at position open from the cached
+	// SignalForecast. Zero values (no cached forecast at open) disable the
+	// tft_uncertainty_expansion erosion signal for this position's lifetime
+	// and preserve archived scorer behaviour.
+	entryUncertainty  float64
+	entryMedianReturn float64
 
 	// exchange is the authoritative exchange this scorer consumes candles from.
 	// Messages from any other exchange are rejected to prevent cross-feed contamination
@@ -70,13 +141,22 @@ type convictionManager struct {
 
 	exitThreshold    float64
 	tightenThreshold float64
+
+	// Grace-window threshold ramp. When both are > 0 and a position's cached
+	// forecast is valid with ForecastAge < graceWindow, the exit/tighten
+	// thresholds are scaled by graceFactor for that tick (via
+	// risk.EffectiveThresholds). Zero disables the ramp — raw thresholds apply.
+	graceWindow time.Duration
+	graceFactor float64
 }
 
-func newConvictionManager(exitThreshold, tightenThreshold float64) *convictionManager {
+func newConvictionManager(exitThreshold, tightenThreshold float64, graceWindow time.Duration, graceFactor float64) *convictionManager {
 	return &convictionManager{
 		scorers:          make(map[string]*convictionState),
 		exitThreshold:    exitThreshold,
 		tightenThreshold: tightenThreshold,
+		graceWindow:      graceWindow,
+		graceFactor:      graceFactor,
 	}
 }
 
@@ -224,18 +304,36 @@ func (e *Engine) handleCandleMessage(ctx context.Context, msg *nats.Msg) {
 			continue
 		}
 
+		cached := e.currentForecast(cs.exchange, ps.Symbol)
+		forecastSnap := toForecastSnapshot(cached)
+		regimeSnap := toRegimeSnapshot(cached)
+		var forecastAge time.Duration
+		if cached != nil && !cached.timestamp.IsZero() {
+			forecastAge = payload.Candle.Timestamp.Sub(cached.timestamp)
+		}
+
 		posCtx := risk.PositionContext{
-			Side:       ps.Side,
-			EntryPrice: ps.EntryPrice,
-			EntryATR:   cs.entryATR,
-			SignalAge:  time.Since(ps.OpenedAt),
+			Side:              ps.Side,
+			EntryPrice:        ps.EntryPrice,
+			EntryATR:          cs.entryATR,
+			SignalAge:         time.Since(ps.OpenedAt),
+			Forecast:          forecastSnap,
+			Regime:            regimeSnap,
+			ForecastAge:       forecastAge,
+			EntryUncertainty:  cs.entryUncertainty,
+			EntryMedianReturn: cs.entryMedianReturn,
+			GraceWindow:       e.conviction.graceWindow,
 		}
 
 		score, signals := cs.scorer.Score(posCtx)
 		recordConvictionScore(ps.Symbol, score, signals)
 		recordConvictionWarmup(ps.Symbol, false)
 
-		if score <= e.conviction.exitThreshold {
+		effectiveExit, effectiveTighten := risk.EffectiveThresholds(
+			posCtx, e.conviction.exitThreshold, e.conviction.tightenThreshold, e.conviction.graceFactor,
+		)
+
+		if score <= effectiveExit {
 			// Log at INFO
 			signalNames := make([]string, len(signals))
 			for i, s := range signals {
@@ -261,7 +359,7 @@ func (e *Engine) handleCandleMessage(ctx context.Context, msg *nats.Msg) {
 			e.posStateMu.Unlock()
 
 			e.executeCloseTrade(ctx, ps, ohlcv.Close, "algorithmic_conviction_loss")
-		} else if score <= e.conviction.tightenThreshold {
+		} else if score <= effectiveTighten {
 			// Tighten stop
 			e.logger.Info().
 				Str("symbol", ps.Symbol).
@@ -370,6 +468,7 @@ func (e *Engine) warmScorer(ctx context.Context, ps *PositionState) {
 
 	// Mark entry with ATR from the (possibly) warmed-up scorer.
 	cs.entryATR = cs.scorer.MarkEntry()
+	e.markEntryForecast(cs, exchange, ps.Symbol)
 
 	// Emit the warm-up gauge immediately so Grafana can distinguish a scorer
 	// that exists-but-isn't-warm from one that was never created at all.
@@ -381,7 +480,21 @@ func (e *Engine) warmScorer(ctx context.Context, ps *PositionState) {
 		Int("candles_fed", candlesFed).
 		Bool("warm", cs.scorer.IsWarm()).
 		Float64("entry_atr", cs.entryATR).
+		Float64("entry_uncertainty", cs.entryUncertainty).
+		Float64("entry_median_return", cs.entryMedianReturn).
 		Msg("conviction scorer initialized (startup)")
+}
+
+// markEntryForecast freezes the entry-time forecast baseline on the scorer.
+// Reads the current cached forecast (nil-safe) and calls
+// scorer.MarkEntryForecast, then copies the captured values onto the
+// convictionState so handleCandleMessage can read them without taking the
+// engine-level forecast lock on every tick.
+func (e *Engine) markEntryForecast(cs *convictionState, exchange, product string) {
+	cached := e.currentForecast(exchange, product)
+	snap := toForecastSnapshot(cached)
+	cs.scorer.MarkEntryForecast(snap)
+	cs.entryUncertainty, cs.entryMedianReturn = cs.scorer.EntryForecast()
 }
 
 // prewarmScorer fetches 30 recent 15M candles from the platform API and feeds
@@ -461,6 +574,7 @@ func (e *Engine) onConvictionPositionOpen(ctx context.Context, ps *PositionState
 
 	candlesFed := e.prewarmScorer(ctx, cs, exchange, ps.Symbol)
 	cs.entryATR = cs.scorer.MarkEntry()
+	e.markEntryForecast(cs, exchange, ps.Symbol)
 
 	recordConvictionWarmup(ps.Symbol, !cs.scorer.IsWarm())
 
@@ -470,6 +584,8 @@ func (e *Engine) onConvictionPositionOpen(ctx context.Context, ps *PositionState
 		Int("candles_fed", candlesFed).
 		Bool("warm", cs.scorer.IsWarm()).
 		Float64("entry_atr", cs.entryATR).
+		Float64("entry_uncertainty", cs.entryUncertainty).
+		Float64("entry_median_return", cs.entryMedianReturn).
 		Msg("conviction scorer initialized (runtime open)")
 }
 

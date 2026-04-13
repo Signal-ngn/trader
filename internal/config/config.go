@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -61,6 +62,13 @@ type Config struct {
 	ConvictionExitThreshold    float64 // score at or below triggers exit (0 = disabled)
 	ConvictionTightenThreshold float64 // score at or below triggers stop tightening (0 = disabled)
 
+	// Grace-window threshold ramp for TFT-aware scoring. During
+	// ForecastAge < ConvictionGraceWindow the effective exit/tighten thresholds
+	// are scaled by ConvictionGraceRamp (0.5 = halve). Zero disables the ramp
+	// and preserves archived behaviour.
+	ConvictionGraceWindow time.Duration
+	ConvictionGraceRamp   float64
+
 	// Grafana Cloud metrics push (optional — disabled when URL is unset)
 	GrafanaCloudRemoteWriteURL string
 	GrafanaCloudUsername       string
@@ -110,6 +118,8 @@ func Load() (*Config, error) {
 
 		ConvictionExitThreshold:    parseFloat(os.Getenv("CONVICTION_EXIT_THRESHOLD"), 0),
 		ConvictionTightenThreshold: parseFloat(os.Getenv("CONVICTION_TIGHTEN_THRESHOLD"), 0),
+		ConvictionGraceWindow:      parseDuration(os.Getenv("CONVICTION_GRACE_WINDOW"), 0),
+		ConvictionGraceRamp:        parseFloat(os.Getenv("CONVICTION_GRACE_RAMP"), 0),
 
 		GrafanaCloudRemoteWriteURL: os.Getenv("GRAFANA_CLOUD_REMOTE_WRITE_URL"),
 		GrafanaCloudUsername:       os.Getenv("GRAFANA_CLOUD_USERNAME"),
@@ -172,6 +182,17 @@ func parseInt(s string, defaultValue int) int {
 		return defaultValue
 	}
 	return v
+}
+
+func parseDuration(s string, defaultValue time.Duration) time.Duration {
+	if s == "" {
+		return defaultValue
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return defaultValue
+	}
+	return d
 }
 
 // parseStringList splits a comma-separated string into a trimmed slice.

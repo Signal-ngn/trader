@@ -35,7 +35,7 @@ type SignalPayload struct {
 	Strategy      string             `json:"strategy"`
 	Product       string             `json:"product"`
 	Exchange      string             `json:"exchange"`
-	AccountID     string             `json:"account_id"`  // target account; empty = all accounts (legacy)
+	AccountID     string             `json:"account_id"` // target account; empty = all accounts (legacy)
 	Action        string             `json:"action"`
 	Market        string             `json:"market"`
 	Leverage      int                `json:"leverage"`
@@ -46,9 +46,35 @@ type SignalPayload struct {
 	TakeProfit    float64            `json:"take_profit"`
 	RiskReasoning string             `json:"risk_reasoning"`
 	PositionPct   float64            `json:"position_pct"`
-	IsExit        bool               `json:"is_exit"`   // true when the strategy is closing an existing position
+	IsExit        bool               `json:"is_exit"` // true when the strategy is closing an existing position
 	Indicators    map[string]float64 `json:"indicators"`
-	Timestamp     int64              `json:"timestamp"` // Unix seconds
+	Forecast      *SignalForecast    `json:"forecast,omitempty"` // optional; populated by forecast-aware strategies (HTS)
+	Timestamp     int64              `json:"timestamp"`          // Unix seconds
+}
+
+// SignalForecast mirrors strategy.SignalForecastPayload in spot-canvas-app.
+// Consumers translate it into risk.ForecastSnapshot at the scoring boundary.
+type SignalForecast struct {
+	Valid        bool    `json:"valid"`
+	ProbLong     float64 `json:"prob_long"`
+	ProbShort    float64 `json:"prob_short"`
+	ProbHold     float64 `json:"prob_hold"`
+	MedianReturn float64 `json:"median_return"`
+	Uncertainty  float64 `json:"uncertainty"`
+	QuantileLow  float64 `json:"quantile_low"`
+	QuantileHigh float64 `json:"quantile_high"`
+	ConfirmH24   float64 `json:"confirm_h24"`
+	Regime       Regime  `json:"regime"`
+}
+
+// Regime mirrors strategy.RegimePayload — the subset of hts.MarketRegime
+// carried inside SignalForecast on the wire.
+type Regime struct {
+	State          string  `json:"state"`
+	VolatilityMult float64 `json:"volatility_mult"`
+	AllowLong      bool    `json:"allow_long"`
+	AllowShort     bool    `json:"allow_short"`
+	Confidence     float64 `json:"confidence"`
 }
 
 // TradingConfig mirrors the SignalNGN server model for a trading config.
@@ -444,6 +470,21 @@ func (e *Engine) handleSignal(ctx context.Context, msg *nats.Msg) {
 		e.lastPrice[product] = signal.Price
 		e.lastPriceMu.Unlock()
 		go e.evaluateOpenPositionsForSymbol(ctx, product)
+	}
+
+	// Cache the forecast for forecast-aware strategies (HTS). Read back at the
+	// 15M conviction Score() call and at position open to freeze the entry-time
+	// baseline. Stored by value so the publisher's pointer lifecycle cannot race.
+	// The wrapper captures the signal's candle-close timestamp so the conviction
+	// loop can compute ForecastAge against the correct origin.
+	if signal.Forecast != nil {
+		cached := &cachedForecast{
+			forecast:  *signal.Forecast,
+			timestamp: time.Unix(signal.Timestamp, 0),
+		}
+		e.forecastMu.Lock()
+		e.forecasts[forecastKey(exchange, product)] = cached
+		e.forecastMu.Unlock()
 	}
 
 	// Build the set of accounts this signal targets.

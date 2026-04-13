@@ -91,6 +91,14 @@ type Engine struct {
 	lastPriceMu sync.RWMutex
 	lastPrice   map[string]float64 // symbol → last signal price
 
+	// Last observed TFT forecast per product. Keyed by `exchange + "/" + product`
+	// because forecasts are product-level (one per HTS evaluation) whereas positions
+	// are account-level. Written in handleSignal on payloads that carry a forecast;
+	// read at the 15M conviction Score() call and at position open to freeze the
+	// EntryUncertainty / EntryMedianReturn baselines.
+	forecastMu sync.RWMutex
+	forecasts  map[string]*cachedForecast
+
 	// signalBuf buffers incoming signals per-account and flushes them after a
 	// quiet period, processing closes before opens.
 	signalBuf *signalBuffer
@@ -132,7 +140,12 @@ func New(cfg *config.Config, repo EngineStore, publisher TradePublisher) *Engine
 	// Initialize conviction manager if thresholds are configured.
 	var cm *convictionManager
 	if cfg.ConvictionExitThreshold > 0 {
-		cm = newConvictionManager(cfg.ConvictionExitThreshold, cfg.ConvictionTightenThreshold)
+		cm = newConvictionManager(
+			cfg.ConvictionExitThreshold,
+			cfg.ConvictionTightenThreshold,
+			cfg.ConvictionGraceWindow,
+			cfg.ConvictionGraceRamp,
+		)
 	}
 
 	return &Engine{
@@ -144,6 +157,7 @@ func New(cfg *config.Config, repo EngineStore, publisher TradePublisher) *Engine
 		cooldown:              make(map[cooldownKey]time.Time),
 		conflict:              make(map[string]string),
 		lastPrice:             make(map[string]float64),
+		forecasts:             make(map[string]*cachedForecast),
 		conviction:            cm,
 		fetchTradingConfigsFn: fetchTradingConfigs,
 		fetchWarmupCandlesFn:  fetchWarmupCandles,
