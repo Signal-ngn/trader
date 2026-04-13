@@ -217,13 +217,22 @@ tasks:
   # ─── Deployment ────────────────────────────────────────────
 
   deploy:production:
-    desc: Build image and deploy to production (signalngn-prod, europe-west1)
+    desc: (deprecated) Use release-tag flow instead — prints instructions
     cmds:
-      - gcloud builds submit
-          --project=signalngn-prod
-          --region=europe-west1
-          --config=cloudbuild-prod.yaml
-          --substitutions=_TAG=$(git rev-parse --short HEAD)
+      - |
+        cat >&2 <<'MSG'
+        Production deploys are driven by release tags, not `task deploy:production`.
+
+        The Cloud Build trigger in signalngn-prod fires on tags matching
+        `release-X.Y.Z`. Use the /release skill (or tag manually) to ship main:
+
+          git tag release-X.Y.Z
+          git push origin release-X.Y.Z
+
+        Monitor the build at:
+          https://console.cloud.google.com/cloud-build/builds?project=signalngn-prod
+        MSG
+        exit 1
 
   # ─── Utilities ─────────────────────────────────────────────
 
