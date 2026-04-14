@@ -85,7 +85,6 @@ var (
 	btLeverage    int
 	btTrendFilter bool
 	btParams                     []string
-	btNoWait                     bool
 	btModelURI                   string
 	btConvictionExitThreshold    float64
 	btConvictionTightenThreshold float64
@@ -95,7 +94,7 @@ var (
 
 var backtestRunCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Submit a backtest and wait for results (use --no-wait to return immediately)",
+	Short: "Submit a backtest and return the job ID",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if btExchange == "" || btProduct == "" || btStrategy == "" || btGranularity == "" {
 			return fmt.Errorf("--exchange, --product, --strategy, and --granularity are required")
@@ -141,54 +140,17 @@ var backtestRunCmd = &cobra.Command{
 			body["grace_threshold_factor"] = btGraceThresholdFactor
 		}
 
-		fmt.Println("Submitting backtest...")
 		var job BacktestJob
 		if err := c.Post(c.apiURL("/backtests"), body, &job); err != nil {
 			return err
 		}
 
 		useJSON, _ := cmd.Flags().GetBool("json")
-
-		if btNoWait {
-			fmt.Printf("Job ID: %s  Status: %s\n", job.ID, job.Status)
-			fmt.Printf("Poll:   trader backtest job %s\n", job.ID)
-			return nil
-		}
-
-		// Poll until completed or failed.
-		fmt.Printf("Job ID: %s  Waiting", job.ID)
-		pollInterval := 2 * time.Second
-		for {
-			time.Sleep(pollInterval)
-			if err := c.Get(c.apiURL("/jobs/"+job.ID), &job); err != nil {
-				fmt.Println()
-				return fmt.Errorf("polling job: %w", err)
-			}
-			switch job.Status {
-			case "completed":
-				fmt.Println(" done.")
-			case "failed":
-				fmt.Println(" failed.")
-				return fmt.Errorf("backtest failed: %s", job.Error)
-			default:
-				fmt.Print(".")
-				continue
-			}
-			break
-		}
-
-		if job.ResultID == nil {
-			return fmt.Errorf("job completed but result_id is missing")
-		}
-
-		var result BacktestResult
-		if err := c.Get(c.apiURL(fmt.Sprintf("/backtests/%d", *job.ResultID)), &result); err != nil {
-			return err
-		}
 		if useJSON {
-			return PrintJSON(result)
+			return PrintJSON(job)
 		}
-		printBacktestResult(result)
+		fmt.Printf("Job ID: %s  Status: %s\n", job.ID, job.Status)
+		fmt.Printf("Poll:   trader backtest job %s\n", job.ID)
 		return nil
 	},
 }
@@ -423,7 +385,6 @@ func init() {
 	backtestRunCmd.Flags().StringVar(&btEnd, "end", "", "End date YYYY-MM-DD (default: today)")
 	backtestRunCmd.Flags().IntVar(&btLeverage, "leverage", 0, "Leverage (futures modes)")
 	backtestRunCmd.Flags().BoolVar(&btTrendFilter, "trend-filter", false, "Enable trend filter")
-	backtestRunCmd.Flags().BoolVar(&btNoWait, "no-wait", false, "Return immediately after submitting; print poll command")
 	backtestRunCmd.Flags().StringArrayVar(&btParams, "params", nil, "Strategy param overrides, e.g. --params confidence=0.80")
 	backtestRunCmd.Flags().StringVar(&btModelURI, "model-uri", "", "ML model URI")
 	backtestRunCmd.Flags().Float64Var(&btConvictionExitThreshold, "conviction-exit-threshold", 0, "Conviction exit threshold (0 = disabled)")
