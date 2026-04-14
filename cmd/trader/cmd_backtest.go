@@ -84,8 +84,13 @@ var (
 	btEnd         string
 	btLeverage    int
 	btTrendFilter bool
-	btParams      []string
-	btNoWait      bool
+	btParams                     []string
+	btNoWait                     bool
+	btModelURI                   string
+	btConvictionExitThreshold    float64
+	btConvictionTightenThreshold float64
+	btGraceWindowMinutes         int
+	btGraceThresholdFactor       float64
 )
 
 var backtestRunCmd = &cobra.Command{
@@ -119,6 +124,21 @@ var backtestRunCmd = &cobra.Command{
 				return fmt.Errorf("--params: %w", err)
 			}
 			body["params"] = params
+		}
+		if btModelURI != "" {
+			body["model_uri"] = btModelURI
+		}
+		if btConvictionExitThreshold > 0 {
+			body["conviction_exit_threshold"] = btConvictionExitThreshold
+		}
+		if btConvictionTightenThreshold > 0 {
+			body["conviction_tighten_threshold"] = btConvictionTightenThreshold
+		}
+		if btGraceWindowMinutes > 0 {
+			body["grace_window_minutes"] = btGraceWindowMinutes
+		}
+		if btGraceThresholdFactor > 0 {
+			body["grace_threshold_factor"] = btGraceThresholdFactor
 		}
 
 		fmt.Println("Submitting backtest...")
@@ -405,6 +425,11 @@ func init() {
 	backtestRunCmd.Flags().BoolVar(&btTrendFilter, "trend-filter", false, "Enable trend filter")
 	backtestRunCmd.Flags().BoolVar(&btNoWait, "no-wait", false, "Return immediately after submitting; print poll command")
 	backtestRunCmd.Flags().StringArrayVar(&btParams, "params", nil, "Strategy param overrides, e.g. --params confidence=0.80")
+	backtestRunCmd.Flags().StringVar(&btModelURI, "model-uri", "", "ML model URI")
+	backtestRunCmd.Flags().Float64Var(&btConvictionExitThreshold, "conviction-exit-threshold", 0, "Conviction exit threshold (0 = disabled)")
+	backtestRunCmd.Flags().Float64Var(&btConvictionTightenThreshold, "conviction-tighten-threshold", 0, "Conviction tighten threshold (0 = disabled)")
+	backtestRunCmd.Flags().IntVar(&btGraceWindowMinutes, "grace-window-minutes", 0, "TFT-aware conviction grace ramp window in minutes (0 = disabled)")
+	backtestRunCmd.Flags().Float64Var(&btGraceThresholdFactor, "grace-threshold-factor", 0, "Grace threshold factor for the ramp (0 = disabled)")
 
 	backtestListCmd.Flags().StringVar(&btListExchange, "exchange", "", "Filter by exchange")
 	backtestListCmd.Flags().StringVar(&btListProduct, "product", "", "Filter by product ID")
