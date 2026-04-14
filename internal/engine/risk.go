@@ -194,15 +194,23 @@ func (e *Engine) evaluatePosition(ctx context.Context, ps *PositionState) {
 		psInMap.Closing = true
 		e.posStateMu.Unlock()
 
+		// Use the risk level (stop/target) as the exit price — not the
+		// cached signal price. This matches backtest behaviour where SL
+		// exits fill at the stop level, hard-stop exits fill at the hard
+		// stop, etc.
+		exitPrice := exitPriceForDecision(decision, ps, currentPrice)
+
 		logger.Info().
 			Str("exit_reason", decision.ExitReason).
 			Int("layer", decision.Layer).
 			Str("strategy", ps.Strategy).
 			Str("position_side", ps.Side).
 			Float64("entry_price", ps.EntryPrice).
+			Float64("exit_price", exitPrice).
+			Float64("trigger_price", currentPrice).
 			Msg("risk evaluation triggered exit")
 
-		e.executeCloseTrade(ctx, ps, currentPrice, decision.ExitReason)
+		e.executeCloseTrade(ctx, ps, exitPrice, decision.ExitReason)
 		return
 	}
 
@@ -232,4 +240,30 @@ func (e *Engine) evaluatePosition(ctx context.Context, ps *PositionState) {
 				Msg("trailing stop state advanced")
 		}
 	}
+}
+
+// exitPriceForDecision returns the exit price that matches the risk layer.
+// Stop-loss, hard-stop, trailing-stop, and take-profit exits fill at their
+// respective price levels (consistent with the backtester). Time-based and
+// other exits fall back to the current market price.
+func exitPriceForDecision(decision risk.ExitDecision, ps *PositionState, fallback float64) float64 {
+	switch decision.Layer {
+	case 1: // signal SL
+		if ps.StopLoss > 0 {
+			return ps.StopLoss
+		}
+	case 2: // hard stop
+		if ps.HardStop > 0 {
+			return ps.HardStop
+		}
+	case 4: // trailing stop
+		if ps.TrailingStop > 0 {
+			return ps.TrailingStop
+		}
+	case 6: // signal TP
+		if ps.TakeProfit > 0 {
+			return ps.TakeProfit
+		}
+	}
+	return fallback
 }
