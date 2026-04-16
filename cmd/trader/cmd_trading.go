@@ -400,9 +400,9 @@ func printTradingConfig(tc TradingConfig) {
 			{"Trend Filter (Long)", fmtTriBool(tc.TrendFilterLong)},
 			{"Trend Filter (Short)", fmtTriBool(tc.TrendFilterShort)},
 			{"Enabled", fmtBool(tc.Enabled)},
-			{"Params", fmtStrategyParams(tc.StrategyParams)},
-			{"Params (Long)", fmtStrategyParams(tc.StrategyParamsLong)},
-			{"Params (Short)", fmtStrategyParams(tc.StrategyParamsShort)},
+			{"Params", fmtStrategyParamsMultiline(tc.StrategyParams)},
+			{"Params (Long)", fmtStrategyParamsMultiline(tc.StrategyParamsLong)},
+			{"Params (Short)", fmtStrategyParamsMultiline(tc.StrategyParamsShort)},
 		},
 	)
 }
@@ -464,6 +464,44 @@ func mergeStrategyParams(existing map[string]map[string]float64, rawParams []str
 	}
 
 	return merged, nil
+}
+
+// fmtStrategyParamsMultiline formats strategy_params as a multi-line string for
+// the detail view: each strategy on its own line, each key/value on its own
+// indented line. Returns "-" when empty.
+func fmtStrategyParamsMultiline(params map[string]map[string]float64) string {
+	if len(params) == 0 {
+		return "-"
+	}
+
+	strategies := make([]string, 0, len(params))
+	for s := range params {
+		strategies = append(strategies, s)
+	}
+	sort.Strings(strategies)
+
+	var lines []string
+	for _, strat := range strategies {
+		kv := params[strat]
+		if len(kv) == 0 {
+			lines = append(lines, strat+": {}")
+			continue
+		}
+		keys := make([]string, 0, len(kv))
+		for k := range kv {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		lines = append(lines, strat+":")
+		for _, k := range keys {
+			lines = append(lines, fmt.Sprintf("  %s: %g", k, kv[k]))
+		}
+	}
+
+	if len(lines) == 0 {
+		return "-"
+	}
+	return strings.Join(lines, "\n")
 }
 
 // fmtStrategyParams formats strategy_params as a compact string for table display.
