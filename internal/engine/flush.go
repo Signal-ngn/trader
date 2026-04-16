@@ -128,14 +128,14 @@ func (e *Engine) processCloseBatched(ctx context.Context, sig bufferedSignal) (f
 		return 0, nil
 	}
 
-	// Apply per-account confidence thresholds for exits.
+	// Apply per-account confidence thresholds for exits. Side derives from the
+	// close action (SELL closes a long, COVER closes a short).
 	baseName := signalBaseName(sig.strategy)
-	if params, ok := tc.StrategyParams[baseName]; ok {
-		if !sig.signal.IsExit {
-			if thresh, ok := params["exit_confidence"]; ok && sig.signal.Confidence > 0 && sig.signal.Confidence < thresh {
-				logger.Debug().Msg("exit signal below exit_confidence threshold, skipping")
-				return 0, nil
-			}
+	params := tc.effectiveStrategyParams(sideFromAction(sig.signal.Action), baseName)
+	if !sig.signal.IsExit {
+		if thresh, ok := params["exit_confidence"]; ok && sig.signal.Confidence > 0 && sig.signal.Confidence < thresh {
+			logger.Debug().Msg("exit signal below exit_confidence threshold, skipping")
+			return 0, nil
 		}
 	}
 
@@ -320,12 +320,12 @@ func (e *Engine) processOpenBatched(ctx context.Context, sig bufferedSignal, loc
 		return 0, fmt.Errorf("strategy %s not allowed", sig.strategy)
 	}
 
-	// Per-account confidence threshold.
+	// Per-account confidence threshold. Side derives from the open action
+	// (BUY → long, SHORT → short).
 	baseName := signalBaseName(sig.strategy)
-	if params, ok := tc.StrategyParams[baseName]; ok {
-		if thresh, ok := params["confidence"]; ok && sig.signal.Confidence < thresh {
-			return 0, fmt.Errorf("confidence %.2f below threshold %.2f", sig.signal.Confidence, thresh)
-		}
+	params := tc.effectiveStrategyParams(sideFromAction(sig.signal.Action), baseName)
+	if thresh, ok := params["confidence"]; ok && sig.signal.Confidence < thresh {
+		return 0, fmt.Errorf("confidence %.2f below threshold %.2f", sig.signal.Confidence, thresh)
 	}
 
 	side, positionSide, marketType := mapSignalToSide(sig.signal.Action, tc)

@@ -11,20 +11,29 @@ import (
 )
 
 // TradingConfig mirrors the server model.
+//
+// The four per-side fields (TrendFilterLong/Short and StrategyParamsLong/Short)
+// are nullable: a nil pointer / nil map decodes from a JSON `null` and means
+// "use the shared default". Older servers that omit these fields decode the
+// same way, so the CLI is forwards-compatible with pre-rollout deployments.
 type TradingConfig struct {
-	ID              int                           `json:"id"`
-	AccountID       string                        `json:"account_id"`
-	Exchange        string                        `json:"exchange"`
-	ProductID       string                        `json:"product_id"`
-	Granularity     string                        `json:"granularity"`
-	StrategiesSpot  []string                      `json:"strategies_spot"`
-	StrategiesLong  []string                      `json:"strategies_long"`
-	StrategiesShort []string                      `json:"strategies_short"`
-	LongLeverage    int                           `json:"long_leverage"`
-	ShortLeverage   int                           `json:"short_leverage"`
-	TrendFilter     bool                          `json:"trend_filter"`
-	StrategyParams  map[string]map[string]float64 `json:"strategy_params"`
-	Enabled         bool                          `json:"enabled"`
+	ID                  int                           `json:"id"`
+	AccountID           string                        `json:"account_id"`
+	Exchange            string                        `json:"exchange"`
+	ProductID           string                        `json:"product_id"`
+	Granularity         string                        `json:"granularity"`
+	StrategiesSpot      []string                      `json:"strategies_spot"`
+	StrategiesLong      []string                      `json:"strategies_long"`
+	StrategiesShort     []string                      `json:"strategies_short"`
+	LongLeverage        int                           `json:"long_leverage"`
+	ShortLeverage       int                           `json:"short_leverage"`
+	TrendFilter         bool                          `json:"trend_filter"`
+	TrendFilterLong     *bool                         `json:"trend_filter_long"`
+	TrendFilterShort    *bool                         `json:"trend_filter_short"`
+	StrategyParams      map[string]map[string]float64 `json:"strategy_params"`
+	StrategyParamsLong  map[string]map[string]float64 `json:"strategy_params_long"`
+	StrategyParamsShort map[string]map[string]float64 `json:"strategy_params_short"`
+	Enabled             bool                          `json:"enabled"`
 }
 
 var tradingCmd = &cobra.Command{
@@ -122,17 +131,27 @@ var tradingGetCmd = &cobra.Command{
 // ---- set ----
 
 var (
-	tsGranularity   string
-	tsLong          string
-	tsShort         string
-	tsSpot          string
-	tsLongLeverage  int
-	tsShortLeverage int
-	tsTrendFilter   bool
-	tsNoTrendFilter bool
-	tsEnable        bool
-	tsDisable       bool
-	tsParams        []string
+	tsGranularity        string
+	tsLong               string
+	tsShort              string
+	tsSpot               string
+	tsLongLeverage       int
+	tsShortLeverage      int
+	tsTrendFilter        bool
+	tsNoTrendFilter      bool
+	tsTrendFilterLong    bool
+	tsNoTrendFilterLong  bool
+	tsTrendFilterShort   bool
+	tsNoTrendFilterShort bool
+	tsClearTFLong        bool
+	tsClearTFShort       bool
+	tsEnable             bool
+	tsDisable            bool
+	tsParams             []string
+	tsParamsLong         []string
+	tsParamsShort        []string
+	tsClearParamsLong    bool
+	tsClearParamsShort   bool
 )
 
 var tradingSetCmd = &cobra.Command{
@@ -206,6 +225,54 @@ var tradingSetCmd = &cobra.Command{
 				return err
 			}
 			body["strategy_params"] = merged
+		}
+
+		// Per-side trend filter overrides. Tri-state via paired flags:
+		//   --trend-filter-long    → true
+		//   --no-trend-filter-long → false
+		//   --clear-trend-filter-long → null (use shared default)
+		// Same for short. Last-write-wins if multiple are passed.
+		if cmd.Flags().Changed("trend-filter-long") {
+			body["trend_filter_long"] = true
+		}
+		if cmd.Flags().Changed("no-trend-filter-long") {
+			body["trend_filter_long"] = false
+		}
+		if cmd.Flags().Changed("clear-trend-filter-long") {
+			body["trend_filter_long"] = nil
+		}
+		if cmd.Flags().Changed("trend-filter-short") {
+			body["trend_filter_short"] = true
+		}
+		if cmd.Flags().Changed("no-trend-filter-short") {
+			body["trend_filter_short"] = false
+		}
+		if cmd.Flags().Changed("clear-trend-filter-short") {
+			body["trend_filter_short"] = nil
+		}
+
+		// Per-side strategy params. --params-long merges into existing per-side
+		// map (same grammar as --params); --clear-params-long sends {} to drop
+		// the override entirely so the side falls back to the shared default.
+		if cmd.Flags().Changed("params-long") {
+			merged, err := mergeStrategyParams(existing.StrategyParamsLong, tsParamsLong)
+			if err != nil {
+				return err
+			}
+			body["strategy_params_long"] = merged
+		}
+		if cmd.Flags().Changed("clear-params-long") {
+			body["strategy_params_long"] = map[string]map[string]float64{}
+		}
+		if cmd.Flags().Changed("params-short") {
+			merged, err := mergeStrategyParams(existing.StrategyParamsShort, tsParamsShort)
+			if err != nil {
+				return err
+			}
+			body["strategy_params_short"] = merged
+		}
+		if cmd.Flags().Changed("clear-params-short") {
+			body["strategy_params_short"] = map[string]map[string]float64{}
 		}
 
 		var tc TradingConfig
@@ -330,10 +397,24 @@ func printTradingConfig(tc TradingConfig) {
 			{"Long Leverage", strconv.Itoa(tc.LongLeverage)},
 			{"Short Leverage", strconv.Itoa(tc.ShortLeverage)},
 			{"Trend Filter", fmtBool(tc.TrendFilter)},
+			{"Trend Filter (Long)", fmtTriBool(tc.TrendFilterLong)},
+			{"Trend Filter (Short)", fmtTriBool(tc.TrendFilterShort)},
 			{"Enabled", fmtBool(tc.Enabled)},
 			{"Params", fmtStrategyParams(tc.StrategyParams)},
+			{"Params (Long)", fmtStrategyParams(tc.StrategyParamsLong)},
+			{"Params (Short)", fmtStrategyParams(tc.StrategyParamsShort)},
 		},
 	)
+}
+
+// fmtTriBool renders a *bool: nil → "(shared)", &true → "true", &false → "false".
+// Used for the per-side trend_filter overrides where nil means "fall back to
+// the shared trend_filter value".
+func fmtTriBool(b *bool) string {
+	if b == nil {
+		return "(shared)"
+	}
+	return fmtBool(*b)
 }
 
 // mergeStrategyParams parses --params values and merges them into the existing
@@ -465,11 +546,21 @@ func init() {
 	tradingSetCmd.Flags().StringVar(&tsSpot, "spot", "", "Spot strategies (comma-separated)")
 	tradingSetCmd.Flags().IntVar(&tsLongLeverage, "long-leverage", 1, "Long leverage")
 	tradingSetCmd.Flags().IntVar(&tsShortLeverage, "short-leverage", 1, "Short leverage")
-	tradingSetCmd.Flags().BoolVar(&tsTrendFilter, "trend-filter", false, "Enable trend filter")
-	tradingSetCmd.Flags().BoolVar(&tsNoTrendFilter, "no-trend-filter", false, "Disable trend filter")
+	tradingSetCmd.Flags().BoolVar(&tsTrendFilter, "trend-filter", false, "Enable trend filter (shared default)")
+	tradingSetCmd.Flags().BoolVar(&tsNoTrendFilter, "no-trend-filter", false, "Disable trend filter (shared default)")
+	tradingSetCmd.Flags().BoolVar(&tsTrendFilterLong, "trend-filter-long", false, "Enable trend filter for long side only")
+	tradingSetCmd.Flags().BoolVar(&tsNoTrendFilterLong, "no-trend-filter-long", false, "Disable trend filter for long side only")
+	tradingSetCmd.Flags().BoolVar(&tsClearTFLong, "clear-trend-filter-long", false, "Clear long-side trend filter override (use shared default)")
+	tradingSetCmd.Flags().BoolVar(&tsTrendFilterShort, "trend-filter-short", false, "Enable trend filter for short side only")
+	tradingSetCmd.Flags().BoolVar(&tsNoTrendFilterShort, "no-trend-filter-short", false, "Disable trend filter for short side only")
+	tradingSetCmd.Flags().BoolVar(&tsClearTFShort, "clear-trend-filter-short", false, "Clear short-side trend filter override (use shared default)")
 	tradingSetCmd.Flags().BoolVar(&tsEnable, "enable", false, "Enable the config")
 	tradingSetCmd.Flags().BoolVar(&tsDisable, "disable", false, "Disable the config")
-	tradingSetCmd.Flags().StringArrayVar(&tsParams, "params", nil, "Per-strategy params: <strategy>:<key>=<value> or <strategy>:clear (repeatable)")
+	tradingSetCmd.Flags().StringArrayVar(&tsParams, "params", nil, "Per-strategy params (shared default): <strategy>:<key>=<value> or <strategy>:clear (repeatable)")
+	tradingSetCmd.Flags().StringArrayVar(&tsParamsLong, "params-long", nil, "Per-strategy params for long side only: <strategy>:<key>=<value> or <strategy>:clear (repeatable)")
+	tradingSetCmd.Flags().StringArrayVar(&tsParamsShort, "params-short", nil, "Per-strategy params for short side only: <strategy>:<key>=<value> or <strategy>:clear (repeatable)")
+	tradingSetCmd.Flags().BoolVar(&tsClearParamsLong, "clear-params-long", false, "Clear long-side params override (use shared default)")
+	tradingSetCmd.Flags().BoolVar(&tsClearParamsShort, "clear-params-short", false, "Clear short-side params override (use shared default)")
 
 	tradingWipeCmd.Flags().BoolVar(&twConfirm, "confirm", false, "Required: confirm the wipe")
 	tradingWipeCmd.Flags().StringVar(&twExchange, "exchange", "", "Restrict wipe to a single exchange")

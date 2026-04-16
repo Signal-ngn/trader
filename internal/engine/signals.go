@@ -78,20 +78,73 @@ type Regime struct {
 }
 
 // TradingConfig mirrors the SignalNGN server model for a trading config.
+//
+// StrategyParamsLong and StrategyParamsShort are optional per-side overrides:
+// when present, their keys win over the shared StrategyParams for the matching
+// side. Resolution is per-key, not per-strategy — a side override that omits a
+// key still inherits that key from the shared map. See effectiveStrategyParams.
 type TradingConfig struct {
-	ID              int                           `json:"id"`
-	AccountID       string                        `json:"account_id"`
-	Exchange        string                        `json:"exchange"`
-	ProductID       string                        `json:"product_id"`
-	Granularity     string                        `json:"granularity"`
-	StrategiesSpot  []string                      `json:"strategies_spot"`
-	StrategiesLong  []string                      `json:"strategies_long"`
-	StrategiesShort []string                      `json:"strategies_short"`
-	LongLeverage    int                           `json:"long_leverage"`
-	ShortLeverage   int                           `json:"short_leverage"`
-	Enabled         bool                          `json:"enabled"`
-	StrategyParams  map[string]map[string]float64 `json:"strategy_params"`
-	MinConfidence   float64                       `json:"min_confidence"`
+	ID                  int                           `json:"id"`
+	AccountID           string                        `json:"account_id"`
+	Exchange            string                        `json:"exchange"`
+	ProductID           string                        `json:"product_id"`
+	Granularity         string                        `json:"granularity"`
+	StrategiesSpot      []string                      `json:"strategies_spot"`
+	StrategiesLong      []string                      `json:"strategies_long"`
+	StrategiesShort     []string                      `json:"strategies_short"`
+	LongLeverage        int                           `json:"long_leverage"`
+	ShortLeverage       int                           `json:"short_leverage"`
+	Enabled             bool                          `json:"enabled"`
+	StrategyParams      map[string]map[string]float64 `json:"strategy_params"`
+	StrategyParamsLong  map[string]map[string]float64 `json:"strategy_params_long"`
+	StrategyParamsShort map[string]map[string]float64 `json:"strategy_params_short"`
+	MinConfidence       float64                       `json:"min_confidence"`
+}
+
+// sideFromAction returns "long" for BUY/SELL and "short" for SHORT/COVER.
+// Empty string for unknown actions (defensive — callers should already have
+// filtered by action).
+func sideFromAction(action string) string {
+	switch action {
+	case "BUY", "SELL":
+		return "long"
+	case "SHORT", "COVER":
+		return "short"
+	default:
+		return ""
+	}
+}
+
+// effectiveStrategyParams resolves the params map for a given side and
+// strategy base name. Per-key resolution order (earlier wins):
+//  1. Side-specific override (StrategyParamsLong / StrategyParamsShort)
+//  2. Shared StrategyParams
+//
+// Returns nil when neither side nor shared has any keys for the strategy.
+// nil is a valid map for read-only lookups, so callers can index it directly.
+func (tc *TradingConfig) effectiveStrategyParams(side, baseName string) map[string]float64 {
+	var sideMap map[string]float64
+	switch side {
+	case "long":
+		sideMap = tc.StrategyParamsLong[baseName]
+	case "short":
+		sideMap = tc.StrategyParamsShort[baseName]
+	}
+	shared := tc.StrategyParams[baseName]
+	if len(sideMap) == 0 {
+		return shared
+	}
+	if len(shared) == 0 {
+		return sideMap
+	}
+	merged := make(map[string]float64, len(shared)+len(sideMap))
+	for k, v := range shared {
+		merged[k] = v
+	}
+	for k, v := range sideMap {
+		merged[k] = v
+	}
+	return merged
 }
 
 // signalKey uniquely identifies a (exchange, product, granularity, strategy) tuple.

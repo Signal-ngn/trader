@@ -49,11 +49,21 @@ The CLI SHALL provide a `trader trading set <account> <exchange> <product>` subc
 | `--spot` | Spot strategies (comma-separated) |
 | `--long-leverage` | Long leverage multiplier |
 | `--short-leverage` | Short leverage multiplier |
-| `--trend-filter` | Enable trend filter |
-| `--no-trend-filter` | Disable trend filter |
+| `--trend-filter` | Enable trend filter (shared default) |
+| `--no-trend-filter` | Disable trend filter (shared default) |
+| `--trend-filter-long` | Enable trend filter for long side only (overrides shared default) |
+| `--no-trend-filter-long` | Disable trend filter for long side only |
+| `--clear-trend-filter-long` | Clear long-side override; long side falls back to the shared default |
+| `--trend-filter-short` | Enable trend filter for short side only |
+| `--no-trend-filter-short` | Disable trend filter for short side only |
+| `--clear-trend-filter-short` | Clear short-side override; short side falls back to the shared default |
 | `--enable` | Enable the config |
 | `--disable` | Disable the config |
-| `--params` | Per-strategy params: `<strategy>:<key>=<value>` or `<strategy>:clear` (repeatable) |
+| `--params` | Per-strategy params (shared default): `<strategy>:<key>=<value>` or `<strategy>:clear` (repeatable) |
+| `--params-long` | Per-strategy params for long side only (same grammar as `--params`); merged into existing per-side map |
+| `--params-short` | Per-strategy params for short side only (same grammar as `--params`); merged into existing per-side map |
+| `--clear-params-long` | Clear all long-side param overrides; long side falls back to the shared `--params` |
+| `--clear-params-short` | Clear all short-side param overrides; short side falls back to the shared `--params` |
 
 Unset flags SHALL preserve the existing values from the fetched config. On success it SHALL render the updated config. With `--json` it SHALL print the full JSON response.
 
@@ -72,6 +82,23 @@ Unset flags SHALL preserve the existing values from the fetched config. On succe
 #### Scenario: Clear strategy params
 - **WHEN** `trader trading set live coinbase BTC-USD --params ml_xgboost:clear` is run
 - **THEN** the request body SHALL set `strategy_params.ml_xgboost` to `{}`
+
+#### Scenario: Set per-side strategy params override
+- **WHEN** `trader trading set live coinbase FLOKI-USD --params-short hts:uncertainty_cap=1.7` is run
+- **THEN** the request body SHALL include `strategy_params_short` merged from the existing per-side map plus the new key, leaving `strategy_params` and `strategy_params_long` untouched
+- **AND** at signal-processing time the engine SHALL apply `uncertainty_cap=1.7` to short-side `hts` evaluation only, while long-side evaluation continues to use the shared `strategy_params`
+
+#### Scenario: Clear per-side strategy params
+- **WHEN** `trader trading set live coinbase FLOKI-USD --clear-params-short` is run
+- **THEN** the request body SHALL set `strategy_params_short` to `{}`, dropping the per-side override so the short side falls back to the shared `strategy_params`
+
+#### Scenario: Set per-side trend filter override
+- **WHEN** `trader trading set live coinbase BONK-USD --trend-filter-short --no-trend-filter-long` is run
+- **THEN** the request body SHALL set `trend_filter_short: true` and `trend_filter_long: false`, leaving the shared `trend_filter` field unchanged
+
+#### Scenario: Clear per-side trend filter override
+- **WHEN** `trader trading set live coinbase BONK-USD --clear-trend-filter-long` is run
+- **THEN** the request body SHALL set `trend_filter_long: null`, so the long side falls back to the shared `trend_filter` value
 
 #### Scenario: Invalid params format
 - **WHEN** `--params` is provided with an invalid format (missing colon or equals)

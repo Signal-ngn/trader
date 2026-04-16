@@ -67,33 +67,36 @@ func (e *Engine) processSignal(ctx context.Context, signal SignalPayload, produc
 	// The ingestion server publishes signals using the most permissive threshold
 	// across all accounts (so no trader misses a signal). Each trader engine is
 	// responsible for enforcing its own configured threshold here.
+	//
+	// Params are resolved per-side: a long-side override (BUY/SELL) wins over
+	// the shared map for that key; same for short (SHORT/COVER). Missing keys
+	// fall back to the shared map.
 	baseName := signalBaseName(strategy)
-	if params, ok := tradingConfig.StrategyParams[baseName]; ok {
-		switch signal.Action {
-		case "BUY", "SHORT":
-			if thresh, ok := params["confidence"]; ok && signal.Confidence < thresh {
+	params := tradingConfig.effectiveStrategyParams(sideFromAction(signal.Action), baseName)
+	switch signal.Action {
+	case "BUY", "SHORT":
+		if thresh, ok := params["confidence"]; ok && signal.Confidence < thresh {
+			logger.Debug().
+				Str("strategy", strategy).
+				Float64("confidence", signal.Confidence).
+				Float64("threshold", thresh).
+				Msg("signal below account confidence threshold, skipping")
+			return
+		}
+	case "SELL", "COVER":
+		// ML strategies self-govern exit confidence server-side: the ingestion
+		// server only emits a SELL when P(long) drops below the strategy's own
+		// exit threshold, and sets is_exit=true. Applying an additional
+		// exit_confidence gate here would double-filter and silently swallow
+		// legitimate exits. Skip the gate for any signal flagged is_exit=true.
+		if !signal.IsExit {
+			if thresh, ok := params["exit_confidence"]; ok && signal.Confidence > 0 && signal.Confidence < thresh {
 				logger.Debug().
 					Str("strategy", strategy).
 					Float64("confidence", signal.Confidence).
-					Float64("threshold", thresh).
-					Msg("signal below account confidence threshold, skipping")
+					Float64("exit_threshold", thresh).
+					Msg("exit signal below account exit_confidence threshold, skipping")
 				return
-			}
-		case "SELL", "COVER":
-			// ML strategies self-govern exit confidence server-side: the ingestion
-			// server only emits a SELL when P(long) drops below the strategy's own
-			// exit threshold, and sets is_exit=true. Applying an additional
-			// exit_confidence gate here would double-filter and silently swallow
-			// legitimate exits. Skip the gate for any signal flagged is_exit=true.
-			if !signal.IsExit {
-				if thresh, ok := params["exit_confidence"]; ok && signal.Confidence > 0 && signal.Confidence < thresh {
-					logger.Debug().
-						Str("strategy", strategy).
-						Float64("confidence", signal.Confidence).
-						Float64("exit_threshold", thresh).
-						Msg("exit signal below account exit_confidence threshold, skipping")
-					return
-				}
 			}
 		}
 	}
